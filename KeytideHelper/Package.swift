@@ -4,16 +4,16 @@ import PackageDescription
 // Compile the same sources as the production Xcode helper target. This package
 // does not install, sign, register, or launch the service.
 let package = Package(
-    name: "KeyStatsHelper",
+    name: "KeytideHelper",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "KeyStatsHelper", targets: ["KeyStatsHelper"])
+        .executable(name: "KeytideHelper", targets: ["KeytideHelper"])
     ],
     targets: [
         .executableTarget(
-            name: "KeyStatsHelper",
+            name: "KeytideHelper",
             path: ".",
-            exclude: ["Assets.xcassets", "Info.plist", "KeyStatsHelper.entitlements", "README.md", "Tests"],
+            exclude: ["Assets.xcassets", "Info.plist", "KeytideHelper.entitlements", "README.md", "Tests"],
             sources: [
                 "main.swift",
                 "EventTapController.swift",
@@ -28,8 +28,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "KeyStatsHelperTests",
-            dependencies: ["KeyStatsHelper"],
+            name: "KeytideHelperTests",
+            dependencies: ["KeytideHelper"],
             path: "Tests"
         )
     ]

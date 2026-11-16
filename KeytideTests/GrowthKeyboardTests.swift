@@ -59,6 +59,20 @@ final class GrowthKeyboardTests: XCTestCase {
         super.tearDown()
     }
 
+    func testMediaCountsUseDisplayedIntervalWithoutRewritingSourceCounts() throws {
+        let presentation = try model([
+            "2026-10-01": day("2026-10-01", total: 5, counts: ["F2": 2, "BrightnessUp": 3]),
+            "2026-10-05": day("2026-10-05", total: 4, counts: ["BrightnessUp": 4])])
+        let cumulative = presentation.frame(at: 4)
+        XCTAssertEqual(cumulative.physical.counts["F2"], 9)
+        XCTAssertEqual(cumulative.physical.mediaCounts["F2"], 7)
+        XCTAssertEqual(cumulative.snapshot.keyPressCounts, ["F2": 2, "BrightnessUp": 7])
+        let single = presentation.intervalFrame(from: date("2026-10-05"), through: date("2026-10-05"))
+        XCTAssertEqual(single.physical.counts["F2"], 4)
+        XCTAssertEqual(single.physical.mediaCounts["F2"], 4)
+        XCTAssertEqual(single.snapshot.totalKeyPresses, 4)
+    }
+
     func testReturningToRangePreservesEarlierCumulativeCutoff() throws {
         let (manager, _) = try manager(history: ["2026-10-01": day("2026-10-01", total: 2, counts: ["A": 2])],
                                       current: day("2026-10-05", total: 3, counts: ["A": 3]))
@@ -197,7 +211,9 @@ final class GrowthKeyboardTests: XCTestCase {
         let equal = try XCTUnwrap(frame.keyUsages.first { $0.id == "=" })
         XCTAssertEqual(equal.count, 10_000)
         XCTAssertEqual(equal.progress, 0.5)
-        XCTAssertEqual(frame.physical.unsupported, ["BrightnessUp": 2])
+        XCTAssertEqual(frame.physical.unsupported, [:])
+        XCTAssertEqual(frame.physical.mediaCounts, ["F2": 2])
+        XCTAssertEqual(frame.keyUsages.first { $0.id == "F2" }?.count, 2)
         XCTAssertNil(frame.keyUsages.first { $0.id == "BrightnessUp" })
         XCTAssertEqual(frame.keyUsages.first { $0.id == "LeftCmd" }?.count, 5_000)
     }

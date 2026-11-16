@@ -1,5 +1,5 @@
 "permission.title" = "需要辅助功能权限";
-"permission.message" = "Keytide 需要辅助功能权限来统计键盘和鼠标活动。\n\n点击“打开授权引导”后，系统会打开“隐私与安全性 > 辅助功能”。请在列表中找到 KeyStatsHelper 并打开开关完成授权。";
+"permission.message" = "Keytide 需要辅助功能权限来统计键盘和鼠标活动。\n\n点击“打开授权引导”后，系统会打开“隐私与安全性 > 辅助功能”。请在列表中找到 KeytideHelper 并打开开关完成授权。";
 "permission.reinstallTip" = "授权一次即可，今后版本升级不会再要求重新授权。";
 "permission.openSettings" = "打开授权引导";
 "permission.later" = "稍后";
@@ -224,7 +224,7 @@
 "activity.openGrowthFor" = "查看截至%@的键盘成长";
 "activity.moreInsights" = "更多洞察与趣味记录";
 "activity.lifetimeFormat" = "累计：%@ 次按键 · %@ 次点击 · 鼠标移动 %@ · 滚动 %@\n%@";
-"activity.privacy" = "只保存聚合统计，不记录你的输入内容";
+"activity.privacy" = "统计与可选回放明细保存在本机，不上传输入记录";
 "heatmap.dailyScope" = "当天次数";
 "appStats.button" = "应用统计";
 "appStats.range.today" = "今天";
@@ -273,8 +273,6 @@
 "heatmap.detailFormat" = "%d 按键 · %d 点击";
 "helperMigration.title" = "一次性授权更新";
 "helperMigration.body" = "Keytide 现在通过一个轻量 Helper 监听键鼠。这是最后一次手动授权 —— 完成后，今后所有版本升级都不会再要求重新授权。";
-"helperMigration.autoReset.success" = "我们已为你自动清理旧的 \"KeyStats\" 条目。在打开的系统设置里授权 \"KeyStatsHelper\" 即可。";
-"helperMigration.autoReset.manual" = "请到系统设置 → 隐私与安全性 → 辅助功能，先用减号删除旧的 \"KeyStats\" 条目，再授权 \"KeyStatsHelper\"。";
 "helperMigration.openSettings" = "打开系统设置";
 "helperMigration.later" = "稍后";
 
@@ -360,7 +358,7 @@
 "growth.mode.editorial" = "Editorial 2.5D";
 "growth.mode.3d" = "3D Growth";
 "growth.mode.choose" = "键盘显示模式";
-"growth.mode.3d.help" = "从第 1 天播放累计 3D 生长，到今天停止。窗口失焦时暂停。";
+"growth.mode.3d.help" = "按原始顺序加速回放，缩短长时间空闲；记录较多的一天约 8 秒，原始毫秒时间不变。没有顺序明细的日期仅展示逐日成长。单日模式可回放所选日期；窗口失焦时停止播放。";
 "growth.mode.3d.description" = "完整 77 键 3D Growth 键盘";
 
 "mechanicalKeyboard.title" = "机械键盘";
@@ -390,6 +388,8 @@
 "keyboard.model.choose" = "键盘模型";
 "keyboard.model.help" = "在轻薄的 Mac 键帽与实体感机械键帽之间切换。";
 "keyboard.model.mechanical" = "机械";
+"keyboard.viewport.fit" = "适合窗口";
+"keyboard.viewport.help" = "捏合缩放，双指滚动平移。点击“适合窗口”恢复默认视图。";
 "keyboard.mode.growth" = "成长统计";
 "keyboard.mode.choose" = "键盘使用模式";
 "growth.metric.caption" = "累计敲击";
@@ -410,8 +410,8 @@
 "keyboard.typing.mouse" = "点击任意键帽，体验它的按下与回弹。";
 "keyboard.typing.keyboard.title" = "用真实键盘试打";
 "keyboard.typing.keyboard" = "窗口获得焦点时，支持的实体按键会同步响应。";
-"keyboard.typing.privacy.title" = "只留此刻，不留记录";
-"keyboard.typing.privacy" = "按键仅用于内存中的动画，不保存文本或输入顺序。";
+"keyboard.typing.privacy.title" = "试打与记录分开控制";
+"keyboard.typing.privacy" = "试打动画本身不保存记录；若已开启真实回放，实体按键仍按该设置记录。";
 "keyboard.insight.close" = "关闭键位详情";
 "keyboard.replay.toggle" = "显示或隐藏回放控制";
 "keyboard.typing.compact" = "点击键帽，或在这里试打。\n只留此刻，不留记录。";
@@ -552,3 +552,128 @@
 "activity.insight.mousePeak" = "鼠标最忙碌的一天";
 "activity.insight.revision" = "删除，也算一种前进。此处为删除键占比。";
 "activity.insight.recordedDays" = "已留下 %d 个活跃日的足迹。空白格只是没有记录，不代表那天没有精彩。";
+
+// Collection status and permission guidance
+"monitoring.retry" = "采集失败 · 重试";
+"monitoring.permissionFailed" = "辅助功能权限不可用。请打开授权引导，为 KeytideHelper 授权后重试。";
+"monitoring.tapFailed" = "输入监听未能启动。请检查 KeytideHelper 的隐私权限，然后重试。";
+"monitoring.installFailed" = "采集服务安装或启动失败。点击重试以重新准备服务。";
+"helperMigration.authorizationOnly" = "Keytide 使用 KeytideHelper 采集键鼠聚合统计。请在系统设置 → 隐私与安全性 → 辅助功能中授权新的 Helper。旧权限条目未被修改。";
+
+// Welcome guide
+"welcome.window" = "欢迎使用 Keytide";
+"welcome.title" = "你好，Keytide。";
+"welcome.subtitle" = "日常输入，从此清晰可见。";
+"welcome.privacy" = "默认只保存聚合统计。\n可选的真实回放会记录按键顺序和时间，仅留在本机。";
+"welcome.menubar" = "在菜单栏找到小键帽。\n即使关闭这个窗口，统计也在那里。";
+"welcome.start" = "开始设置";
+"welcome.later" = "稍后设置";
+"welcome.preview" = "先看看效果";
+"welcome.previewTitle" = "你的键盘，也有故事。";
+"welcome.previewBody" = "先体验本机 3D 示例，无需授权，也不会开始记录。";
+"welcome.connect" = "只需一次授权。";
+"welcome.connectBody" = "KeytideHelper 是 Keytide 的采集服务。请在系统设置 → 隐私与安全性 → 辅助功能中启用它，以统计键盘和鼠标活动。";
+"welcome.service" = "Keytide 服务";
+"welcome.permission" = "辅助功能";
+"welcome.capture" = "活动统计";
+"welcome.servicePreparing" = "正在本机安全地准备…";
+"welcome.serviceReady" = "采集服务 · 已准备";
+"welcome.serviceFailed" = "采集服务 · 需要处理";
+"welcome.permissionWaiting" = "辅助功能 · 等待授权";
+"welcome.permissionCheck" = "辅助功能 · 请检查隐私权限";
+"welcome.captureWaiting" = "活动统计 · 尚未开始";
+"welcome.captureFailed" = "活动统计 · 启动失败";
+"welcome.openSettings" = "打开系统设置";
+"welcome.ready" = "准备好了。";
+"welcome.readyBody" = "采集已开始。像平常一样使用 Mac，统计会慢慢生长。";
+"welcome.firstPress" = "第一下，交给你。";
+"welcome.menuReminder" = "想看看时，随时从菜单栏打开 Keytide。";
+"welcome.login" = "登录时启动 Keytide";
+"welcome.openStats" = "打开统计面板";
+"welcome.openKeyboard" = "探索 3D 键盘";
+"welcome.permissionGranted" = "已授权";
+"welcome.stateReady" = "已就绪";
+"welcome.stateFailed" = "需要处理";
+"welcome.statePending" = "尚未开始";
+"welcome.stateCheck" = "请检查连接";
+"welcome.firstReceived" = "收到了，第一下。";
+"welcome.step1" = "01  /  认识 KEYTIDE";
+"welcome.step2" = "02  /  连接与授权";
+"welcome.step3" = "03  /  准备就绪";
+"welcome.reopen" = "重新打开使用指引";
+
+// Explicit opt-in, local-only chronological replay.
+"replay.recording.title" = "真实回放记录";
+"replay.recording.enable" = "保存真实按键顺序";
+"replay.recording.help" = "默认关闭。开启后跨 App 记录物理键位、按下／松开顺序和毫秒时间，仅在本机加密保存，直到你手动删除。顺序可能用于推断输入内容；不上传、不加入普通统计导出。停止记录不会删除已有明细。";
+"replay.recording.off" = "真实回放记录 · 已关闭";
+"replay.recording.on" = "真实回放记录 · 正在记录";
+"replay.recording.starting" = "真实回放记录 · 正在连接";
+"replay.recording.suspended" = "真实回放记录 · 已暂挂";
+"replay.recording.unavailable" = "记录未能启动或已停止。请检查新版 Helper、权限及本地存储后重新开启；没有转为明文保存。";
+"replay.recording.stop" = "停止真实回放记录";
+"replay.recording.delete" = "删除全部回放明细…";
+"replay.consent.title" = "开启跨 App 的真实回放记录？";
+"replay.consent.body" = "这会记录你在其他 App 中按了哪些物理键、先后顺序、按下与松开时间（毫秒）。即使不读取文本字段，这些记录仍可能推断出密码、聊天等输入内容。不能保证所有敏感输入都能被识别。\n\n记录仅在本机加密保存，不上传；长期保留，直到你手动删除。菜单栏红点表示功能已开启，右键菜单可停止记录。尊重系统安全输入，受保护或断连期间会有缺失。原有历史不能补回顺序。";
+"replay.consent.enable" = "开启本机记录";
+"replay.delete.title" = "永久删除全部回放明细？";
+"replay.delete.body" = "同时停止记录。聚合统计、应用统计和键盘累计成长不会删除；这些日期的真实顺序将无法恢复。";
+"replay.delete.failed" = "部分回放明细未能删除，请检查本地文件访问权限。";
+"replay.loading" = "正在读取本机回放明细…";
+"replay.coverage" = "按原始顺序加速回放已记录片段，缺失部分不补造。";
+"replay.noDetails" = "当天没有顺序明细，仅展示逐日成长。";
+"replay.unreadable" = "部分本机回放明细无法读取；未生成替代按键。";
+"replay.playDay" = "回放当天";
+
+// Built-in replay example; never merged with personal statistics.
+"replay.example.scope" = "示例回放";
+"replay.example.play" = "播放示例";
+"replay.example.return" = "返回";
+"replay.example.returnHelp" = "退出示例，恢复我的统计";
+"replay.example.help" = "内置合成数据，仅用于体验按压与成长，不计入你的统计。";
+"replay.example.metric" = "示例累计按键";
+"replay.example.summary" = "示例回放 · 第 %d 天 · 合成数据";
+
+"growth.key.mediaBreakdown" = "F 键 %@ 次 · 媒体操作 %@ 次\n媒体操作按键帽图标归类显示。";
+
+/* Trackpad phase-one preview: no persistence. */
+"trackpad.keyboard" = "键盘";
+"trackpad.title" = "触控板";
+"trackpad.stage" = "工作台舞台";
+"trackpad.canvas" = "触控板实时表面，显示归一化指尖位置";
+"trackpad.haptics" = "轻触觉";
+"trackpad.start" = "开始预览";
+"trackpad.stop" = "停止预览";
+"trackpad.ink" = "笔迹";
+"trackpad.stardust" = "星尘";
+"trackpad.brush" = "触控板画笔";
+"trackpad.clear" = "清空";
+"trackpad.preview.help" = "实时预览。点击画布隐藏指针，Esc 退出。后台记录需单独开启。";
+"trackpad.ready" = "预览已停止 · 未录制";
+"trackpad.waiting" = "等待真实触点 · 已启动设备不代表已收到数据";
+"trackpad.unavailable" = "当前设备无法开启触控板预览，基本键鼠统计不受影响。";
+"trackpad.live" = "%ld 个触点 · 源时钟 %.3f 秒 · 仅预览，未录制";
+
+"growth.key.systemActionUnavailable" = "仅统计 F 键事件；此图标对应的系统操作目前未采集。";
+
+"trackpad.record" = "本机记录";
+
+"trackpad.record.stop" = "停止记录";
+
+"trackpad.replay" = "回放当天";
+
+"trackpad.delete" = "删除记录";
+
+"trackpad.delete.confirm" = "删除全部触控板记录？聚合统计保留。";
+
+"trackpad.cancel" = "取消";
+
+"trackpad.failed" = "记录不可用或保存失败。";
+
+"trackpad.recording" = "本机记录中，关闭窗口后继续";
+
+"trackpad.replay.empty" = "该日期无可读取记录。";
+
+"trackpad.consent" = "记录跨 App 的指尖位置、顺序、源时间和相对压力？仅本机加密保存直到手动删除，不上传、不加入统计导出。关闭窗口不会停止记录。";
+
+"trackpad.record.always" = "全天后台记录";

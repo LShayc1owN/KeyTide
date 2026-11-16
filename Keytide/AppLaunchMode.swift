@@ -28,3 +28,23 @@ enum AppLaunchMode: Equatable {
         return bytes.count == 32
     }
 }
+
+/// Copy the old application's domain once, before any singleton reads defaults.
+/// Existing destination values win; daily snapshots are never added together.
+enum ApplicationIdentityMigration {
+    static let legacyDomain = "com.xuanlprk.KeyStatsMac"
+    static let currentDomain = "com.xuanlprk.KeyTide"
+    static let marker = "keytide.identityMigration.v1"
+
+    static func migrate(defaults: UserDefaults, destination: String = currentDomain,
+                        source: String = legacyDomain) {
+        var current = defaults.persistentDomain(forName: destination) ?? [:]
+        guard current[marker] as? Bool != true else { return }
+        let previous = defaults.persistentDomain(forName: source) ?? [:]
+        for (key, value) in previous where current[key] == nil {
+            current[key] = value
+        }
+        current[marker] = true
+        defaults.setPersistentDomain(current, forName: destination)
+    }
+}

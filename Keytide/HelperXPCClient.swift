@@ -12,8 +12,9 @@ final class HelperXPCClient {
 
     private let lock = NSLock()
     private var connection: NSXPCConnection?
+    private var connectionGeneration = 0
     private var _state: State = .idle
-    private var eventSink: KeyStatsEventSinkProtocol?
+    private var eventSink: KeytideEventSinkProtocol?
     private var stateObservers: [(State) -> Void] = []
 
     private init() {}
@@ -23,7 +24,7 @@ final class HelperXPCClient {
         return _state
     }
 
-    func setEventSink(_ sink: KeyStatsEventSinkProtocol) {
+    func setEventSink(_ sink: KeytideEventSinkProtocol) {
         lock.lock()
         self.eventSink = sink
         connection?.exportedObject = sink
@@ -44,14 +45,16 @@ final class HelperXPCClient {
             return
         }
 
+        connectionGeneration += 1
+        let generation = connectionGeneration
         let c = NSXPCConnection(machServiceName: HelperLocations.machServiceName)
-        c.remoteObjectInterface = NSXPCInterface(with: KeyStatsHelperProtocol.self)
+        c.remoteObjectInterface = NSXPCInterface(with: KeytideHelperProtocol.self)
 
-        let exported = NSXPCInterface(with: KeyStatsEventSinkProtocol.self)
+        let exported = NSXPCInterface(with: KeytideEventSinkProtocol.self)
         let classes = NSSet(array: [NSDictionary.self, NSString.self, NSNumber.self]) as! Set<AnyHashable>
         exported.setClasses(
             classes,
-            for: #selector(KeyStatsEventSinkProtocol.receiveEvent(_:)),
+            for: #selector(KeytideEventSinkProtocol.receiveEvent(_:)),
             argumentIndex: 0,
             ofReply: false
         )
@@ -76,12 +79,12 @@ final class HelperXPCClient {
 
         c.invalidationHandler = { [weak self] in
             let reason = "invalidated"
-            self?.transition(to: .disconnected(reason: reason))
+            guard self?.transition(to: .disconnected(reason: reason), generation: generation) == true else { return }
             finish(.disconnected(reason: reason))
         }
         c.interruptionHandler = { [weak self] in
             let reason = "interrupted"
-            self?.transition(to: .disconnected(reason: reason))
+            guard self?.transition(to: .disconnected(reason: reason), generation: generation) == true else { return }
             finish(.disconnected(reason: reason))
         }
         c.resume()
@@ -91,12 +94,12 @@ final class HelperXPCClient {
 
         let proxy = c.remoteObjectProxyWithErrorHandler { [weak self] err in
             let reason = "\(err)"
-            self?.transition(to: .disconnected(reason: reason))
+            guard self?.transition(to: .disconnected(reason: reason), generation: generation) == true else { return }
             finish(.disconnected(reason: reason))
-        } as? KeyStatsHelperProtocol
+        } as? KeytideHelperProtocol
 
         guard let proxy = proxy else {
-            transition(to: .disconnected(reason: "no proxy"))
+            guard transition(to: .disconnected(reason: "no proxy"), generation: generation) else { return }
             finish(.disconnected(reason: "no proxy"))
             return
         }
@@ -106,14 +109,38 @@ final class HelperXPCClient {
                 NSLog("[HelperXPCClient] interface version mismatch: client=\(HelperLocations.interfaceVersion) helper=\(helperVersion)")
             }
             let newState: State = .connected(helperVersion: helperVersion, accessibilityGranted: granted)
-            self?.transition(to: newState)
+            guard self?.transition(to: newState, generation: generation) == true else { return }
             finish(newState)
         }
     }
 
     func startMonitoring(completion: @escaping (Bool, Int) -> Void) {
-        withProxy({ proxy in proxy.startMonitoring(reply: completion) },
-                  fallback: { completion(false, HelperErrorCode.accessibilityDenied) })
+        lock.lock()
+        let c = connection
+        let generation = connectionGeneration
+        lock.unlock()
+        let completionLock = NSLock()
+        var completed = false
+        let finish: (Bool, Int) -> Void = { ok, code in
+            completionLock.lock()
+            let already = completed
+            completed = true
+            completionLock.unlock()
+            if !already { completion(ok, code) }
+        }
+        guard let c else { finish(false, HelperErrorCode.accessibilityDenied); return }
+        let proxy = c.remoteObjectProxyWithErrorHandler { [weak self] error in
+            guard self?.transition(to: .disconnected(reason: error.localizedDescription), generation: generation) == true else { return }
+            finish(false, HelperErrorCode.tapCreateFailed)
+        } as? KeytideHelperProtocol
+        guard let proxy else { finish(false, HelperErrorCode.tapCreateFailed); return }
+        proxy.startMonitoring { [weak self] ok, code in
+            guard let self else { return }
+            self.lock.lock()
+            let current = self.connectionGeneration == generation
+            self.lock.unlock()
+            if current { finish(ok, code) }
+        }
     }
 
     /// 重发握手，获取 helper 最新的 accessibility 授权状态。
@@ -121,6 +148,7 @@ final class HelperXPCClient {
     func refreshState(completion: @escaping (State) -> Void) {
         lock.lock()
         let c = connection
+        let generation = connectionGeneration
         lock.unlock()
         guard let c = c else {
             connect(completion: completion)
@@ -138,9 +166,9 @@ final class HelperXPCClient {
         }
         let proxy = c.remoteObjectProxyWithErrorHandler { [weak self] err in
             let reason = "\(err)"
-            self?.transition(to: .disconnected(reason: reason))
+            guard self?.transition(to: .disconnected(reason: reason), generation: generation) == true else { return }
             finish(.disconnected(reason: reason))
-        } as? KeyStatsHelperProtocol
+        } as? KeytideHelperProtocol
         guard let proxy = proxy else {
             connect(completion: completion)
             return
@@ -150,13 +178,34 @@ final class HelperXPCClient {
                 NSLog("[HelperXPCClient] interface version mismatch: client=\(HelperLocations.interfaceVersion) helper=\(v)")
             }
             let newState: State = .connected(helperVersion: v, accessibilityGranted: g)
-            self?.transition(to: newState)
+            guard self?.transition(to: newState, generation: generation) == true else { return }
             finish(newState)
         }
     }
 
     func stopMonitoring() {
         withProxy({ $0.stopMonitoring() }, fallback: {})
+    }
+
+    func setReplayRecordingEnabled(_ enabled: Bool, completion: @escaping (Bool) -> Void) {
+        lock.lock()
+        let c = connection, token = connectionGeneration
+        let supported: Bool
+        if case .connected(let version, _) = _state { supported = version >= 2 } else { supported = false }
+        lock.unlock()
+        guard supported, let c else { completion(false); return }
+        let once = NSLock(); var completed = false
+        let finish: (Bool) -> Void = { ok in
+            once.lock(); let already = completed; completed = true; once.unlock()
+            if !already { completion(ok) }
+        }
+        let proxy = c.remoteObjectProxyWithErrorHandler { _ in finish(false) } as? KeytideHelperProtocol
+        guard let proxy else { finish(false); return }
+        proxy.setReplayRecordingEnabled(enabled) { [weak self] ok in
+            guard let self else { finish(false); return }
+            self.lock.lock(); let valid = self.connectionGeneration == token; self.lock.unlock()
+            finish(ok && valid)
+        }
     }
 
     /// 让 helper 主动调一次 `AXIsProcessTrustedWithOptions(prompt: true)`，把自己注册进
@@ -192,6 +241,7 @@ final class HelperXPCClient {
         lock.lock()
         let c = connection
         connection = nil
+        connectionGeneration += 1
         _state = .idle
         lock.unlock()
         c?.invalidate()
@@ -202,6 +252,7 @@ final class HelperXPCClient {
     private func sendPromptAccessibility(completion: @escaping (Bool) -> Void) {
         lock.lock()
         let c = connection
+        let generation = connectionGeneration
         lock.unlock()
 
         guard let c = c else {
@@ -210,9 +261,9 @@ final class HelperXPCClient {
         }
 
         let proxy = c.remoteObjectProxyWithErrorHandler { [weak self] err in
-            self?.transition(to: .disconnected(reason: "\(err)"))
+            guard self?.transition(to: .disconnected(reason: "\(err)"), generation: generation) == true else { return }
             completion(false)
-        } as? KeyStatsHelperProtocol
+        } as? KeytideHelperProtocol
 
         guard let proxy = proxy else {
             completion(false)
@@ -222,28 +273,33 @@ final class HelperXPCClient {
         proxy.promptAccessibility(reply: completion)
     }
 
-    private func withProxy<T>(_ fn: (KeyStatsHelperProtocol) -> T,
+    private func withProxy<T>(_ fn: (KeytideHelperProtocol) -> T,
                               fallback: () -> T) -> T {
         lock.lock()
         let c = connection
+        let generation = connectionGeneration
         lock.unlock()
         guard let c = c else { return fallback() }
         let proxy = c.remoteObjectProxyWithErrorHandler { [weak self] err in
-            self?.transition(to: .disconnected(reason: "\(err)"))
-        } as? KeyStatsHelperProtocol
+            guard self?.transition(to: .disconnected(reason: "\(err)"), generation: generation) == true else { return }
+        } as? KeytideHelperProtocol
         return proxy.map(fn) ?? fallback()
     }
 
-    private func transition(to state: State) {
+    @discardableResult
+    private func transition(to state: State, generation: Int? = nil) -> Bool {
         var observers: [(State) -> Void] = []
         lock.lock()
+        if let generation, generation != connectionGeneration { lock.unlock(); return false }
         _state = state
         observers = stateObservers
         if case .disconnected = state {
+            connectionGeneration += 1
             connection?.invalidate()
             connection = nil
         }
         lock.unlock()
         observers.forEach { $0(state) }
+        return true
     }
 }

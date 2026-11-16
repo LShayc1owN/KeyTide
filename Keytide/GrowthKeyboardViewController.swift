@@ -5,9 +5,11 @@ import Cocoa
 final class GrowthKeyboardViewController: NSViewController {
     private let loadPresentation: () -> GrowthKeyboardPresentation?
     private let startsIn3D: Bool
+    private let loadReplay: ((String, @escaping (Result<KeyReplayDay, Error>) -> Void) -> Void)?
     private let playback = GrowthPlaybackDriver()
     private var presentation: GrowthKeyboardPresentation?
     private var displayedKeyUsages: [GrowthKeyboardKeyUsage] = []
+    private var displayedMediaCounts: [String: Int]? = [:]
     private var selectionGeneration = 0
     private let renderer = EditorialKeyboardRenderer(frame: .zero)
     private var spatialRenderer: GrowthKeyboard3DRenderer?
@@ -22,6 +24,11 @@ final class GrowthKeyboardViewController: NSViewController {
     private let rangeStartPicker = NSDatePicker()
     private let rangeSeparator = NSTextField(labelWithString: "–")
     private var previousScope = 0
+    private var example: KeyReplayExample?
+    private var realDateBeforeExample: Date?
+    private var realScopeBeforeExample = 0
+    private var isExample: Bool { scope == 3 }
+    private var usesTimeline: Bool { scope == 0 || isExample }
     private var inspectionDate: Date?
     private var rangeStart: Date?
     private var displayedMetricTitle: String?
@@ -31,6 +38,7 @@ final class GrowthKeyboardViewController: NSViewController {
 
     private let modeSelector = NSSegmentedControl()
     private var shows3D: Bool { modeSelector.selectedSegment == 1 }
+    private var isPlaybackRunning: Bool { playback.state.isPlaying || playback.isPresentingPlaybackFrame }
     private var observers: [NSObjectProtocol] = []
     private weak var observedWindow: NSWindow?
     private var isPresented = false
@@ -53,13 +61,15 @@ final class GrowthKeyboardViewController: NSViewController {
         let value = DateFormatter(); value.dateStyle = .medium; value.timeStyle = .none; return value
     }()
 
-    init(manager: StatsManager, startsIn3D: Bool = false) {
+    init(manager: StatsManager, startsIn3D: Bool = false,
+         loadReplay: ((String, @escaping (Result<KeyReplayDay, Error>) -> Void) -> Void)? = nil) {
         self.startsIn3D = startsIn3D
+        self.loadReplay = loadReplay
         loadPresentation = { GrowthKeyboardPresentation.load(from: manager) }
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { playback.pause(); observers.forEach { NotificationCenter.default.removeObserver($0) } }
+    deinit { pausePlayback(); observers.forEach { NotificationCenter.default.removeObserver($0) } }
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 620))
@@ -111,7 +121,7 @@ final class GrowthKeyboardViewController: NSViewController {
         datePicker.target = self; datePicker.action = #selector(pickDate)
         datePicker.setAccessibilityLabel(text("growth.date"))
         datePicker.widthAnchor.constraint(equalToConstant: 130).isActive = true
-        scopeSelector.addItems(withTitles: [text("keyboard.scope.cumulative"), text("keyboard.scope.day"), text("keyboard.scope.range")])
+        scopeSelector.addItems(withTitles: [text("keyboard.scope.cumulative"), text("keyboard.scope.day"), text("keyboard.scope.range"), text("replay.example.scope")])
         scopeSelector.target = self; scopeSelector.action = #selector(changeScope)
         scopeSelector.controlSize = .small
         scopeSelector.setAccessibilityLabel(text("keyboard.scope.choose"))
@@ -184,7 +194,7 @@ final class GrowthKeyboardViewController: NSViewController {
 
     func setTransportCollapsed(_ collapsed: Bool) {
         transportContent?.isHidden = collapsed
-        if collapsed { playback.pause() }
+        if collapsed { pausePlayback(); renderSelection() }
         updateControls()
     }
 
@@ -195,6 +205,8 @@ final class GrowthKeyboardViewController: NSViewController {
             view.needsDisplay = true
         }
     }
+
+    func updateDisplayResolution() { spatialRenderer?.updateDisplayResolution() }
 
     /// Screen-space key bounds in this page's coordinates, used by the Studio
     /// to position detail without introducing another selection model.
@@ -239,7 +251,7 @@ final class GrowthKeyboardViewController: NSViewController {
     }
 
     @objc private func changeDisplayMode() {
-        playback.pause()
+        pausePlayback()
         let selected = shows3D ? renderer.selectedKeyID : spatialRenderer?.selectedKeyID
         if shows3D && spatialRenderer == nil {
             let spatial: GrowthKeyboard3DRenderer
@@ -249,8 +261,10 @@ final class GrowthKeyboardViewController: NSViewController {
                     try model.configureFullModel()
                     spatial = GrowthKeyboard3DRenderer(layout: renderer.sceneLayout,
                         renderFrame: { model.renderGrowth($0, background: $1) },
-                        imageSize: MechanicalKeyboardScene.size, bakesLegends: true,
-                        usesTransparentCanvas: startsIn3D)
+                        imageSize: MechanicalKeyboardScene.size,
+                        usesTransparentCanvas: startsIn3D,
+                        renderDetailedFrame: { model.renderGrowth($0, background: $1, pixelScale: $2) },
+                        replaySceneFactory: { GrowthReplayPressScene(mechanical: model) })
                 } catch {
                     usesMechanical = false
                     NSAlert(error: error).runModal()
@@ -286,7 +300,7 @@ final class GrowthKeyboardViewController: NSViewController {
     func setMechanical(_ enabled: Bool) {
         _ = view
         guard enabled != usesMechanical else { return }
-        playback.pause()
+        pausePlayback()
         let selected = spatialRenderer?.selectedKeyID ?? renderer.selectedKeyID
         spatialRenderer?.setActive(false)
         spatialRenderer?.removeFromSuperview()
@@ -318,6 +332,7 @@ final class GrowthKeyboardViewController: NSViewController {
 
     private func updateActive() {
         playback.waitsForPresentation = shows3D
+        playback.replaysSingleDay = loadReplay != nil || isExample
         playback.stepInterval = shows3D ? 0.35 : 0.15
         playback.setActive(isWindowActive)
         spatialRenderer?.setActive(isWindowActive && shows3D)
@@ -330,6 +345,9 @@ final class GrowthKeyboardViewController: NSViewController {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers = []
         observedWindow = window
+        observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("Keytide.keyReplayRecordsDeleted"), object: nil, queue: .main) { [weak self] _ in
+            self?.pausePlayback(); self?.renderSelection()
+        })
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
                      NSWindow.didMiniaturizeNotification, NSWindow.didChangeOcclusionStateNotification,
                      NSWindow.willCloseNotification] {
@@ -363,24 +381,34 @@ final class GrowthKeyboardViewController: NSViewController {
 
     func refreshData(resetToToday: Bool = false) {
         _ = view
-        let selectedDate = presentation.map { $0.date(at: playback.state.offset) }
-        let wasToday = scope == 0 && (presentation.map { playback.state.offset == $0.dayCount - 1 } ?? true)
-        playback.pause()
-        presentation = loadPresentation()
+        let restoringDate = isExample ? nil : realDateBeforeExample
+        let selectedDate = restoringDate ?? presentation.map { $0.date(at: playback.state.offset) }
+        let wasToday = restoringDate == nil && scope == 0 && (presentation.map { playback.state.offset == $0.dayCount - 1 } ?? true)
+        pausePlayback()
+        if isExample {
+            if example == nil { example = .make() }
+            presentation = example?.presentation
+        } else {
+            presentation = loadPresentation()
+            realDateBeforeExample = nil
+        }
         guard let presentation else {
             renderer.apply([]); renderer.selectKey(nil)
             spatialRenderer?.apply([]); spatialRenderer?.selectKey(nil)
             displayedKeyUsages = []
+            displayedMediaCounts = [:]
             dateLabel.stringValue = text("growth.empty")
             totalLabel.stringValue = ""
             coverageLabel.stringValue = text("growth.empty.detail")
+            displayedMetricTitle = nil
+            displayedScopeTitle = text("keyboard.mode.growth")
             notifySidebar()
             updateControls()
             return
         }
         datePicker.calendar = presentation.calendar
         datePicker.timeZone = presentation.calendar.timeZone
-        datePicker.minDate = scope == 0 ? presentation.period.firstTrackedDate : nil
+        datePicker.minDate = usesTimeline ? presentation.period.firstTrackedDate : nil
         rangeStartPicker.calendar = presentation.calendar
         rangeStartPicker.timeZone = presentation.calendar.timeZone
         rangeStartPicker.maxDate = presentation.today
@@ -400,7 +428,7 @@ final class GrowthKeyboardViewController: NSViewController {
         selectionGeneration &+= 1
         let selectionToken = selectionGeneration
         let frame: GrowthKeyboardFrame
-        if scope == 0 {
+        if usesTimeline {
             frame = presentation.frame(at: playback.state.offset)
         } else {
             let end = inspectionDate ?? presentation.date(at: playback.state.offset)
@@ -408,18 +436,59 @@ final class GrowthKeyboardViewController: NSViewController {
         }
         if shows3D {
             let offset = playback.state.offset, generation = playback.presentationGeneration
-            spatialRenderer?.apply(frame.keyUsages, animated: playback.isPresentingPlaybackFrame) { [weak self] in
-                guard let self, self.shows3D, self.playback.state.offset == offset,
-                      self.selectionGeneration == selectionToken else { return }
-                self.displayedKeyUsages = frame.keyUsages
-                self.updateLabels(for: frame)
-                self.refreshSelectedKeyDetail()
-                self.playback.framePresented(at: offset, generation: generation)
+            let playing = playback.isPresentingPlaybackFrame
+            let apply: (KeyReplayDay) -> Void = { [weak self] day in
+                guard let self, self.selectionGeneration == selectionToken,
+                      self.playback.presentationGeneration == generation else { return }
+                let previous = self.usesTimeline && offset > 0 ? presentation.frame(at: offset - 1) : nil
+                let from = previous?.keyUsages ?? frame.keyUsages.map { GrowthKeyboardKeyUsage(id: $0.id, count: 0) }
+                self.spatialRenderer?.onReplayProgress = { [weak self] usages, count in
+                    guard let self, self.selectionGeneration == selectionToken else { return }
+                    self.displayedKeyUsages = usages
+                    self.displayedMediaCounts = nil
+                    self.updateLabels(for: frame)
+                    let base = previous?.snapshot.totalKeyPresses ?? 0
+                    self.totalLabel.stringValue = self.grouped(min(frame.snapshot.totalKeyPresses, base > Int.max - count ? Int.max : base + count))
+                    self.coverageLabel.stringValue = self.text(self.isExample ? "replay.example.help" : "replay.coverage")
+                    self.refreshSelectedKeyDetail()
+                }
+                self.spatialRenderer?.apply(frame.keyUsages, animated: playing,
+                    replayFrom: playing ? from : nil,
+                    recordedReplay: playing ? GrowthReplayPressPlan(day: day) : nil) { [weak self] in
+                    guard let self, self.shows3D, self.playback.state.offset == offset,
+                          self.selectionGeneration == selectionToken else { return }
+                    self.displayedKeyUsages = frame.keyUsages
+                    self.displayedMediaCounts = frame.physical.mediaCounts
+                    self.updateLabels(for: frame)
+                    if playing && !self.isExample {
+                        self.coverageLabel.stringValue += " · " + self.text(day.hasUnreadableChunks ? "replay.unreadable" : day.entries.isEmpty ? "replay.noDetails" : "replay.coverage")
+                    }
+                    self.refreshSelectedKeyDetail()
+                    self.playback.framePresented(at: offset, generation: generation)
+                    self.updateControls()
+                }
             }
+            if playing, isExample {
+                apply(frame.dayKey == example?.recordedDayKey ? (example?.day ?? .empty) : .empty)
+            } else if playing, let loadReplay {
+                coverageLabel.stringValue = text("replay.loading")
+                loadReplay(frame.dayKey) { [weak self] result in
+                    guard let self, self.isWindowActive, self.selectionGeneration == selectionToken,
+                          self.playback.presentationGeneration == generation else { return }
+                    switch result {
+                    case .success(let day): apply(day)
+                    case .failure:
+                        self.pausePlayback(); self.renderSelection()
+                        self.coverageLabel.stringValue = self.text("replay.unreadable")
+                        self.notifySidebar()
+                    }
+                }
+            } else { apply(.empty) }
             updateControls()
         } else {
             renderer.apply(frame.keyUsages)
             displayedKeyUsages = frame.keyUsages
+            displayedMediaCounts = frame.physical.mediaCounts
             updateLabels(for: frame)
             refreshSelectedKeyDetail()
         }
@@ -450,14 +519,16 @@ final class GrowthKeyboardViewController: NSViewController {
             notifySidebar(); updateControls()
             return
         }
-        displayedMetricTitle = text("growth.metric.caption")
-        displayedScopeTitle = text("keyboard.mode.growth")
-        set(dateLabel, String(format: text("growth.date.summary"), dateFormatter.string(from: frame.date), frame.dayIndex))
+        displayedMetricTitle = text(isExample ? "replay.example.metric" : "growth.metric.caption")
+        displayedScopeTitle = text(isExample ? "replay.example.scope" : "keyboard.mode.growth")
+        set(dateLabel, isExample ? String(format: text("replay.example.summary"), frame.dayIndex)
+            : String(format: text("growth.date.summary"), dateFormatter.string(from: frame.date), frame.dayIndex))
         set(totalLabel, grouped(frame.snapshot.totalKeyPresses))
         var note = frame.hasPartialDetails
             ? String(format: text("growth.coverage"), grouped(frame.snapshot.detailedKeyPresses), grouped(frame.snapshot.totalKeyPresses))
             : text("growth.participation")
         if frame.dayKey != frame.snapshot.dayKey { note += "  " + text("growth.noDailyRecord") }
+        if isExample { note = text("replay.example.help") }
         set(coverageLabel, note)
         notifySidebar()
         datePicker.dateValue = frame.date
@@ -466,7 +537,7 @@ final class GrowthKeyboardViewController: NSViewController {
     }
 
     func exportCurrentImage() -> (image: NSImage, summary: String, coverage: String)? {
-        playback.pause()
+        pausePlayback()
         updateControls()
         guard presentation != nil, shows3D, let image = spatialRenderer?.exportImage() else { return nil }
         // These labels are committed by the same presentation acknowledgement as the image.
@@ -474,9 +545,15 @@ final class GrowthKeyboardViewController: NSViewController {
                 coverageLabel.stringValue)
     }
 
+    private func pausePlayback() {
+        selectionGeneration &+= 1
+        playback.pause()
+        spatialRenderer?.cancelReplayAnimation()
+    }
+
     private func updateControls() {
-        let cumulative = scope == 0
-        play.isHidden = !cumulative
+        let cumulative = usesTimeline
+        play.isHidden = scope == 2
         slider.isHidden = !cumulative
         previous.isHidden = scope == 2
         next.isHidden = scope == 2
@@ -484,18 +561,21 @@ final class GrowthKeyboardViewController: NSViewController {
         rangeSeparator.isHidden = scope != 2
         datePicker.setAccessibilityLabel(text(scope == 2 ? "keyboard.scope.end" : "growth.date"))
         let available = presentation != nil
-        previous.isEnabled = available && (scope != 0 || playback.state.offset > 0)
-        next.isEnabled = available && (scope == 0 ? playback.state.offset < playback.state.lastOffset : (inspectionDate ?? Date()) < (presentation?.today ?? Date()))
-        datePicker.isEnabled = available
+        previous.isEnabled = available && (!cumulative || playback.state.offset > 0)
+        next.isEnabled = available && (cumulative ? playback.state.offset < playback.state.lastOffset : (inspectionDate ?? Date()) < (presentation?.today ?? Date()))
+        datePicker.isEnabled = available && !isExample
+        refresh.isEnabled = !isExample
         slider.isEnabled = available && (presentation?.dayCount ?? 0) > 1
-        play.isEnabled = cumulative && available && (presentation?.dayCount ?? 0) > 1
+        play.isEnabled = scope != 2 && available && ((presentation?.dayCount ?? 0) > 1 || loadReplay != nil)
         today.isEnabled = available
-        play.title = text(playback.state.isPlaying ? "growth.pause" : "growth.play")
-        play.image = NSImage(systemSymbolName: playback.state.isPlaying ? "pause.fill" : "play.fill", accessibilityDescription: nil)
+        today.title = text(isExample ? "replay.example.return" : "growth.today")
+        today.toolTip = isExample ? text("replay.example.returnHelp") : nil
+        play.title = text(isPlaybackRunning ? "growth.pause" : isExample ? "replay.example.play" : scope == 1 ? "replay.playDay" : "growth.play")
+        play.image = NSImage(systemSymbolName: isPlaybackRunning ? "pause.fill" : "play.fill", accessibilityDescription: nil)
         play.setAccessibilityLabel(play.title)
     }
     private func select(_ offset: Int) {
-        if let presentation, offset >= presentation.dayCount - 1,
+        if !isExample, let presentation, offset >= presentation.dayCount - 1,
            playback.state.offset < presentation.dayCount - 1 {
             refreshData(resetToToday: true)
         } else { playback.select(offset) }
@@ -503,16 +583,30 @@ final class GrowthKeyboardViewController: NSViewController {
     @objc private func previousDay() { moveDay(-1) }
     @objc private func nextDay() { moveDay(1) }
     private func moveDay(_ delta: Int) {
-        guard scope != 0, let presentation else { select(playback.state.offset + delta); return }
+        guard !usesTimeline, let presentation else { select(playback.state.offset + delta); return }
         inspectionDate = presentation.calendar.date(byAdding: .day, value: delta, to: inspectionDate ?? presentation.today)
         renderSelection()
     }
     @objc private func showToday() {
+        if isExample { scopeSelector.selectItem(at: realScopeBeforeExample); changeScope(); return }
         if scope != 0 { inspectionDate = Calendar.current.startOfDay(for: Date()) }
         refreshData(resetToToday: true)
     }
     @objc private func changeScope() {
-        playback.pause()
+        pausePlayback()
+        if isExample || previousScope == 3 {
+            if isExample {
+                if previousScope != 3 {
+                    realScopeBeforeExample = previousScope
+                    realDateBeforeExample = previousScope == 0
+                        ? presentation.map { $0.date(at: playback.state.offset) } : inspectionDate
+                }
+                example = .make()
+            }
+            previousScope = scope
+            refreshData(resetToToday: isExample)
+            return
+        }
         guard let presentation else { updateControls(); return }
         if previousScope == 0 { inspectionDate = presentation.date(at: playback.state.offset) }
         inspectionDate = inspectionDate ?? presentation.date(at: playback.state.offset)
@@ -531,7 +625,7 @@ final class GrowthKeyboardViewController: NSViewController {
     @objc private func pickRangeStart() {
         rangeStart = rangeStartPicker.dateValue
         if let end = inspectionDate, rangeStart! > end { inspectionDate = rangeStart }
-        playback.pause(); renderSelection()
+        pausePlayback(); renderSelection()
     }
 
     func showDay(_ date: Date) {
@@ -549,14 +643,28 @@ final class GrowthKeyboardViewController: NSViewController {
         else {
             inspectionDate = datePicker.dateValue
             if let start = rangeStart, start > datePicker.dateValue { rangeStart = datePicker.dateValue }
-            playback.pause(); renderSelection()
+            pausePlayback(); renderSelection()
         }
     }
     @objc private func scrub() { select(slider.integerValue) }
     @objc private func togglePlayback() {
-        guard scope == 0 else { return }
-        if playback.state.isPlaying { playback.pause(); renderSelection() }
-        else { updateActive(); playback.start() }
+        guard scope != 2 else { return }
+        if isPlaybackRunning { pausePlayback(); renderSelection() }
+        else {
+            updateActive()
+            if scope == 1, let presentation {
+                playback.select(presentation.offset(for: inspectionDate ?? presentation.today))
+                playback.playSelection()
+            } else { playback.start() }
+        }
+    }
+
+    func showExample() {
+        _ = view
+        if scope != 3 {
+            scopeSelector.selectItem(at: 3)
+            changeScope()
+        }
     }
     private func showKeyDetail(_ value: GrowthKeyboardKeyUsage?) {
         guard let value else {
@@ -570,6 +678,7 @@ final class GrowthKeyboardViewController: NSViewController {
             ?? text("growth.key.unranked")
         let accessibility = String(format: text("growth.key.accessibility"), displayName(value.id),
             insight.usage.count, insight.share * 100, rank)
+            + (mediaBreakdown(for: value.id, total: value.count).map { "; " + $0 } ?? "")
         notifySidebar()
         spatialRenderer?.setAccessibilityValue(accessibility)
         renderer.setAccessibilityValue(accessibility)
@@ -587,7 +696,15 @@ final class GrowthKeyboardViewController: NSViewController {
         return GrowthKeyboardSidebarSelection(name: displayName(id), countValue: insight.usage.count,
             count: grouped(insight.usage.count),
             share: insight.share,
-            rank: insight.rank.map { String(format: text("growth.key.rank"), $0) })
+            rank: insight.rank.map { String(format: text("growth.key.rank"), $0) },
+            mediaBreakdown: mediaBreakdown(for: id, total: insight.usage.count))
+    }
+
+    private func mediaBreakdown(for id: String, total: Int) -> String? {
+        if ["F3", "F4", "F5", "F6"].contains(id) { return text("growth.key.systemActionUnavailable") }
+        guard PhysicalKeyMapping.hasMediaDisplayKey(id), let displayedMediaCounts else { return nil }
+        let media = displayedMediaCounts[id, default: 0]
+        return String(format: text("growth.key.mediaBreakdown"), grouped(max(0, total - media)), grouped(media))
     }
 
     private func refreshSelectedKeyDetail() {

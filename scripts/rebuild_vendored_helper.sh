@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build, sign, and vendor KeyStatsHelper.app into vendor/.
+# Build, sign, and vendor KeytideHelper.app into vendor/.
 #
-# Run this whenever you change KeyStatsHelper sources or its entitlements.
-# CI checks vendor/KeyStatsHelper.cdhash.txt against the committed bundle;
+# Run this whenever you change KeytideHelper sources or its entitlements.
+# CI checks vendor/KeytideHelper.cdhash.txt against the committed bundle;
 # forgetting to run this after a helper change will fail the build.
 #
 # Usage: ./scripts/rebuild_vendored_helper.sh
@@ -16,7 +16,7 @@ cd "$PROJECT_DIR"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-echo "🔨 Building KeyStatsHelper (Release, universal)..."
+echo "🔨 Building KeytideHelper (Release, universal)..."
 xcodebuild -project Keytide.xcodeproj \
     -scheme helper \
     -configuration Release \
@@ -28,15 +28,15 @@ xcodebuild -project Keytide.xcodeproj \
     build > "$BUILD_DIR/xcodebuild.log" 2>&1 \
     || { tail -50 "$BUILD_DIR/xcodebuild.log"; exit 1; }
 
-HELPER_BUILT="$BUILD_DIR/dd/Build/Products/Release/KeyStatsHelper.app"
+HELPER_BUILT="$BUILD_DIR/dd/Build/Products/Release/KeytideHelper.app"
 if [ ! -d "$HELPER_BUILT" ]; then
     echo "❌ Helper build product not found at $HELPER_BUILT"
     exit 1
 fi
 
-echo "🔏 Signing helper with KeyStatsHelper.entitlements..."
+echo "🔏 Signing helper with KeytideHelper.entitlements..."
 codesign --force --sign - \
-    --entitlements "$PROJECT_DIR/KeyStatsHelper/KeyStatsHelper.entitlements" \
+    --entitlements "$PROJECT_DIR/KeytideHelper/KeytideHelper.entitlements" \
     "$HELPER_BUILT"
 
 CDHASH=$(codesign -d -vvv "$HELPER_BUILT" 2>&1 | awk -F'=' '/^CDHash=/ {print $2}')
@@ -45,17 +45,17 @@ if [ -z "$CDHASH" ]; then
     exit 1
 fi
 
-echo "📦 Replacing vendor/KeyStatsHelper.app..."
+echo "📦 Replacing vendor/KeytideHelper.app..."
 mkdir -p vendor
-rm -rf vendor/KeyStatsHelper.app
-ditto "$HELPER_BUILT" vendor/KeyStatsHelper.app
+rm -rf vendor/KeytideHelper.app
+ditto "$HELPER_BUILT" vendor/KeytideHelper.app
 
-echo "$CDHASH" > vendor/KeyStatsHelper.cdhash.txt
+echo "$CDHASH" > vendor/KeytideHelper.cdhash.txt
 
 echo ""
 echo "✅ Vendored helper updated."
-echo "   Path:   vendor/KeyStatsHelper.app"
+echo "   Path:   vendor/KeytideHelper.app"
 echo "   CDHash: $CDHASH"
 echo ""
-echo "Next: review with 'git status' and commit both vendor/KeyStatsHelper.app"
-echo "and vendor/KeyStatsHelper.cdhash.txt together."
+echo "Next: review with 'git status' and commit both vendor/KeytideHelper.app"
+echo "and vendor/KeytideHelper.cdhash.txt together."

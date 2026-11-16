@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 enum PayloadBuilder {
-    static func build(from event: CGEvent, type: CGEventType) -> [String: Any]? {
+    static func build(from event: CGEvent, type: CGEventType, recordsReplay: Bool = false) -> [String: Any]? {
         if type == SystemMediaKey.eventType {
             guard let code = SystemMediaKey.pressedKeyCode(from: event) else { return nil }
             // System actions have no reliable target App. Forward only a validated key and modifiers.
@@ -19,11 +19,21 @@ enum PayloadBuilder {
         ]
 
         switch type {
-        case .keyDown, .flagsChanged:
+        case .keyDown, .keyUp, .flagsChanged:
+            if type == .keyUp && !recordsReplay { return nil }
             p[HelperPayloadFields.keyCode] = NSNumber(value: event.getIntegerValueField(.keyboardEventKeycode))
             p[HelperPayloadFields.keyboardType] = NSNumber(value: event.getIntegerValueField(.keyboardEventKeyboardType))
             p[HelperPayloadFields.flags] = NSNumber(value: event.flags.rawValue)
             p[HelperPayloadFields.isAutoRepeat] = NSNumber(value: event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
+            if recordsReplay {
+                let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+                let phase: String
+                if type == .flagsChanged {
+                    phase = code == 57 ? "pulse" : (CGEventSource.keyState(.combinedSessionState, key: code) ? "down" : "up")
+                } else { phase = type == .keyDown ? "down" : "up" }
+                p[HelperPayloadFields.replayTimestamp] = NSNumber(value: event.timestamp)
+                p[HelperPayloadFields.replayPhase] = phase
+            }
 
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             if let role = ButtonRoleClassifier.role(for: type, event: event) {

@@ -10,8 +10,8 @@ let package = Package(
     targets: [
         .target(
             name: "KeytideEventCore",
-            path: "KeyStatsHelper",
-            exclude: ["Package.swift", "README.md", "Tests", "Assets.xcassets", "Info.plist", "KeyStatsHelper.entitlements", "main.swift",
+            path: "KeytideHelper",
+            exclude: ["Package.swift", "README.md", "Tests", "Assets.xcassets", "Info.plist", "KeytideHelper.entitlements", "main.swift",
                       "EventTapController.swift", "HelperXPCListener.swift", "HelperIdleSupervisor.swift",
                       "HelperLocations.swift", "HelperProtocols.swift"],
             sources: ["SystemMediaKey.swift", "PayloadBuilder.swift", "HelperPayloadFields.swift", "ButtonRoleClassifier.swift"]
@@ -39,6 +39,7 @@ let package = Package(
                 "KeyboardHeatmapRepresentable.swift",
                 "KeyboardVisualizationViewController.swift",
                 "KeyboardStudioTheme.swift",
+                "TrackpadStudioView.swift",
                 "Keytide.entitlements",
                 "NotificationManager.swift",
                 "StatsManagerLiveEnvironment.swift",
@@ -53,6 +54,8 @@ let package = Package(
                 "AllTimeStatsViewController.swift",
                 "ActivityOverviewView.swift",
                 "MainWindowController.swift",
+                "OnboardingWindowController.swift",
+                "KeyReplayRecording.swift",
                 "HelperMigrationPresenter.swift",
                 "HelperSupervisor.swift",
                 "HelperXPCClient.swift",
@@ -74,6 +77,8 @@ let package = Package(
                 "ActivityHeatmapView.swift",
                 "AppStatsListFilter.swift",
                 "AppLaunchMode.swift",
+                "ReleaseReadiness.swift",
+                "OnboardingProgress.swift",
                 "AppStats.swift",
                 "AppKeyBreakdown.swift",
                 "AppDetailPresentation.swift",
@@ -91,6 +96,8 @@ let package = Package(
                 "GrowthKeyboard3DGeometry.swift",
                 "GrowthKeyboard3DScene.swift",
                 "GrowthKeyboard3DRenderer.swift",
+                "GrowthReplayPressSurface.swift",
+                "KeyReplayStore.swift",
                 "MechanicalKeyboardScene.swift",
                 "MechanicalKeyboardGeometry.swift",
                 "MechanicalKeyboardView.swift",
@@ -104,7 +111,7 @@ let package = Package(
             name: "KeytideCoreTests",
             dependencies: ["KeytideCore", "KeytideEventCore", "PostHog"],
             path: "KeytideTests",
-            sources: ["AppStatsListFilterTests.swift", "ActivityHeatmapTests.swift", "GrowthKeyboard3DTests.swift", "AppLaunchModeTests.swift", "GrowthKeyboardTests.swift", "KeyboardUsageProgressTests.swift", "KeyboardTrackingPeriodTests.swift", "CumulativeKeyboardSnapshotTests.swift", "KeyboardLayoutTests.swift", "PhysicalKeyMappingTests.swift", "AppStatsTests.swift", "AppKeyBreakdownTests.swift", "AppDetailPresentationTests.swift", "SystemMediaKeyTests.swift", "InteractionProfileTests.swift", "AppActivityTrackerTests.swift", "AnalyticsManagerTests.swift", "StatsManagerTests.swift", "StatsModelsTests.swift", "UpdateCheckCoordinatorTests.swift"]
+            sources: ["KeyReplayTests.swift", "AppStatsListFilterTests.swift", "ActivityHeatmapTests.swift", "GrowthKeyboard3DTests.swift", "AppLaunchModeTests.swift", "GrowthKeyboardTests.swift", "KeyboardUsageProgressTests.swift", "KeyboardTrackingPeriodTests.swift", "CumulativeKeyboardSnapshotTests.swift", "KeyboardLayoutTests.swift", "PhysicalKeyMappingTests.swift", "AppStatsTests.swift", "AppKeyBreakdownTests.swift", "AppDetailPresentationTests.swift", "SystemMediaKeyTests.swift", "InteractionProfileTests.swift", "AppActivityTrackerTests.swift", "AnalyticsManagerTests.swift", "StatsManagerTests.swift", "StatsModelsTests.swift", "UpdateCheckCoordinatorTests.swift"]
         )
     ]
 )

@@ -2,7 +2,7 @@ import Foundation
 import Security
 import AppKit
 
-final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeyStatsHelperProtocol, EventPayloadSink {
+final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeytideHelperProtocol, EventPayloadSink {
     private let listener: NSXPCListener
     private let idle = HelperIdleSupervisor()
     private let tap = EventTapController()
@@ -25,26 +25,26 @@ final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeyStatsHelperPr
     func listener(_ listener: NSXPCListener,
                   shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         guard validatePeer(newConnection) else {
-            NSLog("[KeyStatsHelper] peer validation failed, rejecting pid=\(newConnection.processIdentifier)")
+            NSLog("[KeytideHelper] peer validation failed, rejecting pid=\(newConnection.processIdentifier)")
             return false
         }
 
         stateLock.lock()
         if activeConnection != nil {
             stateLock.unlock()
-            NSLog("[KeyStatsHelper] active connection exists, rejecting new")
+            NSLog("[KeytideHelper] active connection exists, rejecting new")
             return false
         }
         stateLock.unlock()
 
-        newConnection.exportedInterface = NSXPCInterface(with: KeyStatsHelperProtocol.self)
+        newConnection.exportedInterface = NSXPCInterface(with: KeytideHelperProtocol.self)
         newConnection.exportedObject = self
 
-        let remote = NSXPCInterface(with: KeyStatsEventSinkProtocol.self)
+        let remote = NSXPCInterface(with: KeytideEventSinkProtocol.self)
         let classes = NSSet(array: [NSDictionary.self, NSString.self, NSNumber.self]) as! Set<AnyHashable>
         remote.setClasses(
             classes,
-            for: #selector(KeyStatsEventSinkProtocol.receiveEvent(_:)),
+            for: #selector(KeytideEventSinkProtocol.receiveEvent(_:)),
             argumentIndex: 0,
             ofReply: false
         )
@@ -64,7 +64,7 @@ final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeyStatsHelperPr
         stateLock.unlock()
 
         idle.connectionDidOpen()
-        NSLog("[KeyStatsHelper] accepted connection from pid=\(newConnection.processIdentifier)")
+        NSLog("[KeytideHelper] accepted connection from pid=\(newConnection.processIdentifier)")
         return true
     }
 
@@ -155,6 +155,12 @@ final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeyStatsHelperPr
         tap.stop()
     }
 
+    func setReplayRecordingEnabled(_ enabled: Bool, reply: @escaping (Bool) -> Void) {
+        idle.noteActivity()
+        tap.setReplayRecordingEnabled(enabled)
+        reply(true)
+    }
+
     func promptAccessibility(reply: @escaping (Bool) -> Void) {
         idle.noteActivity()
         reply(tap.promptAccessibilityTrust())
@@ -171,14 +177,14 @@ final class HelperXPCListener: NSObject, NSXPCListenerDelegate, KeyStatsHelperPr
         let n = forwardCount
         stateLock.unlock()
         guard let conn = conn else {
-            if n <= 3 { NSLog("[KeyStatsHelper] forward #\(n) no active connection") }
+            if n <= 3 { NSLog("[KeytideHelper] forward #\(n) no active connection") }
             return
         }
         let proxy = conn.remoteObjectProxyWithErrorHandler { err in
-            NSLog("[KeyStatsHelper] remote proxy error: \(err)")
-        } as? KeyStatsEventSinkProtocol
+            NSLog("[KeytideHelper] remote proxy error: \(err)")
+        } as? KeytideEventSinkProtocol
         if n <= 3 || n % 100 == 0 {
-            NSLog("[KeyStatsHelper] forward #\(n) proxy=\(proxy == nil ? "nil" : "ok")")
+            NSLog("[KeytideHelper] forward #\(n) proxy=\(proxy == nil ? "nil" : "ok")")
         }
         proxy?.receiveEvent(payload)
     }

@@ -331,6 +331,8 @@ final class ActivityKeycapView: NSView {
 
 final class ActivityDisclosureButton: NSButton {
     private let chevron = NSImageView()
+    private var isHovered = false
+    private var trackingArea: NSTrackingArea?
 
     init(title: String, target: AnyObject?, action: Selector?) {
         super.init(frame: .zero)
@@ -368,6 +370,34 @@ final class ActivityDisclosureButton: NSButton {
 
     func setExpanded(_ expanded: Bool) {
         chevron.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 0.5
+            animation.toValue = 1
+            animation.duration = 0.16
+            chevron.layer?.add(animation, forKey: "disclosureFade")
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(trackingArea!)
+    }
+
+    override func mouseEntered(with event: NSEvent) { updateHover(true) }
+    override func mouseExited(with event: NSEvent) { updateHover(false) }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateHover(isHovered) }
+
+    private func updateHover(_ hovered: Bool) {
+        isHovered = hovered
+        contentTintColor = hovered ? .labelColor : .secondaryLabelColor
+        chevron.contentTintColor = contentTintColor
+        attributedTitle = NSAttributedString(string: "  " + title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: hovered ? NSColor.labelColor : NSColor.secondaryLabelColor
+        ])
     }
 
 }
@@ -387,7 +417,7 @@ final class ActivityMonthCalendarView: NSView {
     private var trackingArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: 600, height: 315) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 600, height: ActivityMonthLayout.height(for: month)) }
     override var acceptsFirstResponder: Bool { !days.isEmpty }
 
     override func keyDown(with event: NSEvent) {
@@ -417,6 +447,7 @@ final class ActivityMonthCalendarView: NSView {
         self.days = days.sorted { $0.date < $1.date }
         self.selectedDate = selectedDate
         if let selectedDate { month = selectedDate }
+        invalidateIntrinsicContentSize()
         rebuildRects()
         needsLayout = true
         needsDisplay = true

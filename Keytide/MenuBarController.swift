@@ -23,6 +23,8 @@ class MenuBarController {
     private var statusItem: NSStatusItem!
     private var statusView: MenuBarStatusView?
     private var contextMenu: NSMenu?
+    private var replayRecordingItem: NSMenuItem?
+    private var replayStatusObserver: NSObjectProtocol?
     private var popover: NSPopover!
     private var popoverStyle: MenuUIStyle = .standard
     private var styleControllers: [String: NSViewController] = [:]
@@ -37,12 +39,16 @@ class MenuBarController {
         setupContextMenu()
         setupPopover()
         setupEventMonitor()
+        replayStatusObserver = NotificationCenter.default.addObserver(forName: .keyReplayRecordingChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.updateMenuBarAppearance()
+        }
         StatsManager.shared.menuBarUpdateHandler = { [weak self] in
             self?.scheduleMenuBarUpdate()
         }
     }
 
     deinit {
+        if let replayStatusObserver { NotificationCenter.default.removeObserver(replayStatusObserver) }
         StatsManager.shared.menuBarUpdateHandler = nil
         pendingMenuBarUpdate?.cancel()
         if let monitor = eventMonitor {
@@ -69,6 +75,7 @@ class MenuBarController {
 
     private func setupContextMenu() {
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         let settingsItem = NSMenuItem(
             title: NSLocalizedString("settings.title", comment: ""),
@@ -85,6 +92,9 @@ class MenuBarController {
         )
         mechanicalKeyboardItem.target = self
         menu.addItem(mechanicalKeyboardItem)
+        let recording = NSMenuItem(title: "", action: #selector(stopReplayRecording), keyEquivalent: "")
+        recording.target = self; recording.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: nil)
+        menu.addItem(recording); replayRecordingItem = recording
 
         menu.addItem(.separator())
 
@@ -142,8 +152,13 @@ class MenuBarController {
     private func showContextMenu() {
         closePopover()
         guard let menu = contextMenu else { return }
+        let recording = KeyReplayRecording.shared
+        replayRecordingItem?.title = NSLocalizedString(recording.isEnabled ? "replay.recording.stop" : "replay.recording.off", comment: "")
+        replayRecordingItem?.isEnabled = recording.isEnabled
         statusItem.popUpMenu(menu)
     }
+
+    @objc private func stopReplayRecording() { KeyReplayRecording.shared.setEnabled(false) }
 
     @objc private func openSettings() {
         AppDelegate.trackClick("context_menu_settings")
@@ -158,6 +173,8 @@ class MenuBarController {
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
+
+    func showStatistics() { showPopover() }
 
     private func showPopover() {
         if popoverStyle != MenuUIStyle.current { setupPopover() }
@@ -255,7 +272,9 @@ class MenuBarController {
         if let statusView = statusView {
             statusView.configure(singleLine: UserDefaults.standard.bool(forKey: MenuBarDisplayPreferences.singleLineKey), fullNumbers: full)
             statusView.update(keysText: parts.keys, clicksText: parts.clicks)
-            let summary = "\(NSLocalizedString("setting.showKeyPresses", comment: "")): \(stats.keyPresses.formatted()) · \(NSLocalizedString("setting.showMouseClicks", comment: "")): \(stats.totalClicks.formatted())"
+            statusView.setReplayIndicator(KeyReplayRecording.shared.isEnabled)
+            let replay = KeyReplayRecording.shared.isEnabled ? " · " + NSLocalizedString(KeyReplayRecording.shared.statusKey, comment: "") : ""
+            let summary = "\(NSLocalizedString("setting.showKeyPresses", comment: "")): \(stats.keyPresses.formatted()) · \(NSLocalizedString("setting.showMouseClicks", comment: "")): \(stats.totalClicks.formatted())" + replay
             statusView.toolTip = summary
             statusView.setAccessibilityLabel(summary)
             statusView.updateIconColor(tintColor,
@@ -326,6 +345,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     @Published var colorStyle: DynamicIconColorStyle = .icon
     @Published var isMinimalMode: Bool = false
     @Published var showsColorDot: Bool = false
+    @Published var showsReplayIndicator = false
 }
 
 struct MenuBarStatusSwiftUIView: View {
@@ -352,6 +372,10 @@ struct MenuBarStatusSwiftUIView: View {
         let horizontalPadding: CGFloat = viewModel.isMinimalMode ? 3 : (hasText ? 6 : 4)
 
         HStack(spacing: 4) {
+            if viewModel.showsReplayIndicator {
+                Circle().fill(Color.red).frame(width: 6, height: 6)
+                    .accessibilityLabel(Text(NSLocalizedString("replay.recording.enable", comment: "")))
+            }
             if !viewModel.isMinimalMode {
                 ZStack(alignment: .topLeading) {
                     if let icon = Self.menuIcon {
@@ -488,7 +512,7 @@ class MenuBarStatusView: NSView {
         // Keep width stable as counters change; only explicit configuration resets it.
         reservedTextWidth = max(reservedTextWidth, measured)
         let textWidth = reservedTextWidth
-        let width = ceil(horizontalPadding + leadingVisualWidth + iconTextSpacing + textWidth + 1)
+        let width = ceil(horizontalPadding + leadingVisualWidth + iconTextSpacing + textWidth + 1 + (viewModel.showsReplayIndicator ? 10 : 0))
 
         if let hostingView = hostingView {
             return NSSize(width: width, height: max(hostingView.fittingSize.height, 20))
@@ -503,6 +527,12 @@ class MenuBarStatusView: NSView {
         self.singleLine = singleLine
         self.fullNumbers = fullNumbers
         viewModel.singleLine = singleLine
+        invalidateIntrinsicContentSize()
+    }
+
+    func setReplayIndicator(_ visible: Bool) {
+        guard viewModel.showsReplayIndicator != visible else { return }
+        viewModel.showsReplayIndicator = visible
         invalidateIntrinsicContentSize()
     }
 

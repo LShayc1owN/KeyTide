@@ -5,10 +5,40 @@ import Foundation
 struct PhysicalKeyMappingResult: Equatable {
     let counts: [String: Int]
     let unsupported: [String: Int]
+    var mediaCounts: [String: Int] = [:]
 }
 
 enum PhysicalKeyMapping {
     private static let supportedIDs = KeyboardLayout.macStyle.supportedKeyIDs
+
+    // Display associations follow the existing MacBook legends, not proof that
+    // the event came from a physical F key. Never use this for recorded replay.
+    private static let mediaDisplayKeys = [
+        "BrightnessDown": "F1", "BrightnessUp": "F2",
+        "PreviousTrack": "F7", "Rewind": "F7", "PlayPause": "F8",
+        "NextTrack": "F9", "FastForward": "F9", "Mute": "F10",
+        "VolumeDown": "F11", "VolumeUp": "F12"
+    ]
+
+    static func hasMediaDisplayKey(_ id: String) -> Bool {
+        mediaDisplayKeys.values.contains(id)
+    }
+
+    static func mapForDisplay(_ keyPressCounts: [String: Int]) -> PhysicalKeyMappingResult {
+        let physical = map(keyPressCounts)
+        var counts = physical.counts
+        var unsupported = physical.unsupported
+        var mediaCounts: [String: Int] = [:]
+        for (name, count) in physical.unsupported {
+            guard let id = mediaDisplayKeys[name] else { continue }
+            let current = counts[id, default: 0]
+            counts[id] = current > Int.max - count ? Int.max : current + count
+            let media = mediaCounts[id, default: 0]
+            mediaCounts[id] = media > Int.max - count ? Int.max : media + count
+            unsupported.removeValue(forKey: name)
+        }
+        return PhysicalKeyMappingResult(counts: counts, unsupported: unsupported, mediaCounts: mediaCounts)
+    }
 
     static func map(_ keyPressCounts: [String: Int]) -> PhysicalKeyMappingResult {
         var counts: [String: Int] = [:]

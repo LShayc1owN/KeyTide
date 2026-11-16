@@ -4,7 +4,7 @@ final class HelperIdleSupervisor {
     private let idleTimeout: TimeInterval = 30
     private var timer: DispatchSourceTimer?
     private var hasActiveConnection = false
-    private let queue = DispatchQueue(label: "com.xuanlprk.KeyStatsMac.helper.idle")
+    private let queue = DispatchQueue(label: "com.xuanlprk.KeyTide.helper.idle")
 
     init() {
         scheduleIdleExit()
@@ -42,7 +42,7 @@ final class HelperIdleSupervisor {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + idleTimeout)
         t.setEventHandler {
-            NSLog("[KeyStatsHelper] idle timeout, exiting")
+            NSLog("[KeytideHelper] idle timeout, exiting")
             exit(0)
         }
         t.resume()

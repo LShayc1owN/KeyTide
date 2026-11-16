@@ -1,35 +1,36 @@
 # Keytide
 
-Keytide 是一款隐私优先、低功耗的 macOS 键盘与鼠标交互统计工具。它通过独立 Helper 采集输入事件，并在本地生成按键、点击、移动、滚动、速率、历史和分应用聚合统计。
+Keytide 是一款面向 macOS 13+ 的原生菜单栏应用，在本地统计键盘与鼠标交互，并用活动日历、趋势图和 3D 成长键盘呈现使用记录。
 
-Keytide 不是 keylogger：它不记录输入文本、按键顺序、鼠标点击坐标、完整鼠标轨迹或用户内容。
+默认仅保存聚合统计。可选的「真实回放记录」会跨 App 保存物理键位、按下／松开顺序和毫秒时间，仅在本机加密保存，长期保留直到手动删除。这些序列可能推断输入内容，包括敏感输入；开启前会明确说明，菜单栏显示红点，并提供停止和删除控制。不读取文本字段、点击坐标、完整鼠标轨迹或剪贴板内容；回放明细不上传、不进入 Analytics，也不加入普通统计导出。
 
-## 当前能力
+## 功能
 
-- 键盘总量、每键累计和组合键统计。
-- 鼠标点击、移动距离和滚动距离。
-- KPS / CPS、每日历史和长期汇总。
-- 菜单栏统计面板：顶部实验性 Input Pulse 用双层波形展示实时 KPS／CPS，并在聚合输入更新时触发有界键帽光点；仅显示期间采样，约 12 秒速率历史只存内存，关闭即清理，不记录键名或输入顺序。下方保留今日总量、最多 15 个常用键、7/30 天趋势及鼠标明细，成长键盘改为轻量文字入口。当前功能已由用户完成交互验收；能耗与发布产物验收另行记录。
-- 分应用聚合统计与键位分布。
-- App Detail 中的 Heatmap / 完整 Key Breakdown。
-- 正式 77 键 Growth Keyboard：Mac / 机械 3D 模型，共享 Usage 配色、Today / 历史日期、Day N、时间轴和精确键位次数；Editorial 2.5D 实现保留。
-- Keyboard Studio 提供标准暗色舞台与极客网格主题，顶部切换 Mac / 机械和“成长统计 / 试打”，键位详情以浮卡呈现，底部回放条可收起。试打通过鼠标或窗口内实体按键体验下沉回弹，使用固定高度，虚拟点击不写统计。
-- 两种模型支持累计、单日及日期区间统计，以及图片导出、复制图片和不含日期／次数的干净图片；导出包含项目仓库署名。
-- 菜单栏支持单行／双行、紧凑／完整数字显示与预览。
-- Mac / 机械均支持 Play from Day 1：按每日累计快照回放，等当前图像就绪后再推进日期，到 Today 停止；暂停、切换模型或失焦会停止播放。
-- App Detail 中的 Interaction Profile：按当前日期范围比较各 App 的 Keyboard / Pointer / Scroll 相对排名。
-- 基于公开 scroll phase 的 Scroll Session 累计统计。
-- 独立的亮度、音量、播放等 System Media Key 聚合语义，不将它们猜成普通 F 键。
-- Analytics consent 后端：默认关闭，未同意时不初始化 PostHog；正式 Settings 开关和 Privacy Center 尚未实现。
-- 可选的端到端加密多设备同步基础。
+- **菜单栏面板**：今日按键与点击、KPS／CPS、常用键、历史趋势和鼠标明细；可选择标准／极客风格，自定义菜单栏统计项与数字格式。
+- **活动记录**：今天、7 天与 30 天趋势，日期浏览、按键与点击明细、月度活动日历、常用键和累计洞察，可跳转到截至所选日期的键盘成长。
+- **应用统计**：按时间范围查看分应用聚合数据，支持名称／bundle ID 搜索、指标排序和应用详情中的键位分布与 Interaction Profile。
+- **Keyboard Studio**：77 键 Mac／机械 3D 模型，累计、单日与日期区间显示，键位次数／占比／排名，以及逐日成长回放。有本机顺序明细的日期按原始顺序加速回放，缩短长时间空闲，记录较多的一天约 8 秒；原始毫秒时间保持不变，重复按键及松开事件驱动按压和逐步成长；没有明细的日期仅展示逐日成长，不生成模拟输入。单日模式也可回放所选日期。旧历史无法补回原始顺序。
+- **窗口内试打**：鼠标点击或实体按键触发短暂下沉回弹；虚拟点击不写入统计，不新增全局输入监听。
+- **键盘图片**：两种模型均支持 PNG 导出、复制和不含日期／次数的干净图片，附项目仓库署名。
+- **数据与设置**：本地 JSON 导入／导出、鼠标距离校准、通知阈值和开机启动。
 
-Growth 使用正式 StatsManager 显示查询，包含未落盘 Today 和既有 Sync 聚合语义。它不读取 Demo 的历史文件。Today 在打开、获得焦点、回到 Today 或手动刷新时更新，不逐键重绘；3D 使用按需静态渲染和最多三张缓存，隐藏、失焦或关闭时取消待执行工作。
+统计包括鼠标各类点击、移动与滚动距离、Scroll Session，以及亮度、音量、播放等媒体键。每键与组合键次数是聚合记录，不是输入文本或原始输入序列。当前产品为独立 macOS App，不提供多设备同步或独立插件。
 
-用户已确认当前新功能测试通过。最近一轮自动验证为 234 项核心 XCTest、7 项发布脚本测试及 Debug 构建通过；真实 VoiceOver 朗读按用户决定保留待验收，性能／能耗和最终发布包验收仍单独进行。旧全局 Heatmap 分页已移除，per-app Heatmap 保留。历史失败实验仅保留本地；功能验收不表示已经发布。
+3D 按需渲染并限制缓存；菜单的实时波形只在显示期间采样，关闭后清理。低功耗是设计目标，最终性能与能耗验收单独进行。产品 Analytics 默认关闭，未同意时不初始化 PostHog；输入统计与分应用数据不得上传至 Analytics。
+
+## 安装与更新
+
+从本仓库的 [Releases](https://github.com/Xuan-lprk/KeyTide/releases) 下载可用版本，将 DMG 内的 `Keytide.app` 拖到 Applications，或解压 ZIP 后复制 App。
+
+首次启动会显示简洁的使用指引，介绍菜单栏入口、隐私边界和授权状态；可稍后设置，也可在设置 → 通用中重新打开。只有监听成功才显示“准备好了”，开机启动由用户主动选择。
+
+首次使用需按 App 引导为 **KeytideHelper** 授予辅助功能权限。当前分发采用 ad-hoc 签名，未经过 Apple 公证；这不同于 Developer ID 分发。不要通过关闭系统安全检查或批量移除隔离属性安装。
+
+App 内“检查更新”打开本仓库 Releases 页面，下载并替换属于手动更新。Sparkle 自动检查与 App 内更新均关闭。
 
 ## 开发
 
-macOS 主工程要求 macOS 13+，使用 Swift、AppKit 和部分 SwiftUI：
+使用 Swift、AppKit 和部分 SwiftUI：
 
 ```bash
 swift test
@@ -43,32 +44,24 @@ xcodebuild \
   build
 ```
 
-涉及全局输入采集的真机运行需要为 `KeyStatsHelper` 授予辅助功能权限。构建成功不能替代 Helper、XPC 和 TCC 的真机验证。
+构建不会启动 App。普通启动会安装／更新 Helper 并注册 LaunchAgent；不要同时运行两份主 App。Debug 的 `--debug-gui-acceptance` 跳过 Helper 安装与旧权限迁移，但仍可能连接已授权的 Helper、写入正式统计并按用户选择运行 Analytics，因此不是离线数据沙盒。详见 [开发指南](AGENTS.md)。
 
-上述命令只执行 build，不执行 Xcode Run；App 输出路径由所用 DerivedData 决定，不按显示名判断哪份 App 最新。普通 Debug 启动仍会进入 Helper 安装 / cdhash 比较、LaunchAgent 管理和旧权限迁移流程；Sparkle 另受更新签名配置限制。
+自动化测试、构建和静态包检查不能替代真实授权、采集、VoiceOver、升级及能耗验收。各轮本机日志保存在忽略的 `build/`，不以历史测试数量表示当前版本已完成全部验收。
 
-Debug 只有显式传入 `--debug-gui-acceptance` 才启用 GUI 验收模式；Release 忽略此参数。该模式跳过 Helper 安装替换、LaunchAgent 管理、旧 Accessibility 迁移/reset，且不初始化 Sparkle；仅连接已有 Helper，协议不兼容或无权限时不修复系统状态。**它不是只读或离线沙盒**：已有 Helper 兼容且获授权时仍可采集，正式数据持久化、Analytics consent 和 Sync 行为仍保留。实际启动需单独批准，不应同时运行两份主 App。详见 [开发指南](AGENTS.md#构建普通启动与-gui-验收模式)。
+## 项目与文档
 
-更新地址及 GitHub 入口已改到 `Xuan-lprk/KeyTide`。已接入用户提供的更新公钥，自动检查和 App 内更新开关当前均关闭；不会创建 Sparkle，普通模式可手动打开 Releases 页面。更新边界与打包说明见 [Keytide macOS 发布流程](docs/macos-release.md)；自有签名、首发更新和 Helper 升级权限连续性仍待验收。
+- [开发指南](AGENTS.md)：架构、隐私与操作边界。
+- [原生 Helper](KeytideHelper/README.md)：独立源码构建、测试和 XPC 边界。
+- [文档索引](docs/README.md)。
+- [macOS 打包与发布](docs/macos-release.md)。
+- [图标资源](Design/Keytide-Icon-v1/README.md)。
 
-本地版本准备与 macOS DMG / ZIP 打包见 [发布流程](docs/macos-release.md)。当前 CI 仅发布 macOS 手动更新包，不要求 Sparkle 私钥或同步服务，不更新上游 Homebrew / Scoop。
+## 名称与兼容
 
-## 仓库导航
+主工程、scheme 和产品为 `Keytide`。主 App 标识符为 `com.xuanlprk.KeyTide`；Helper、Mach service 和 LaunchAgent 为 `com.xuanlprk.KeyTide.helper`。Helper 安装于 `~/Library/Application Support/Keytide/Helper/KeytideHelper.app`。
 
-- [`AGENTS.md`](AGENTS.md)：面向 AI coding agent 的开发约束。
-- [`KeyStatsHelper/README.md`](KeyStatsHelper/README.md)：独立原生 Helper 包的构建／测试、正式 XPC 与权限边界，以及 c3502 聚合统计接入可行性。
-- [`docs/README.md`](docs/README.md)：技术文档索引及状态说明。
-- [`Prototypes/KeyboardAtelier/README.md`](Prototypes/KeyboardAtelier/README.md)：已提交的旧 Porcelain 原型。其他本地实验状态见 PROJECT，不属于本轮提交。
-- [`KeyStats.Windows/README.md`](KeyStats.Windows/README.md)：仓库中保留的 Windows 版本说明。
-- [`contracts/sync/v1/README.md`](contracts/sync/v1/README.md)：多设备同步协议契约。
-- [`services/sync-worker/README.md`](services/sync-worker/README.md)：同步 Worker 说明。
+改名前的主 App 偏好设置域会一次性复制到新域，已有新值优先，旧域保留；旧安装身份仅用于兼容迁移。新 Helper 的权限需要重新授予，不能自动继承旧身份。真实升级连续性需要独立验收。
 
 ## Upstream 与许可
 
-本项目基于 [`debugtheworldbot/keyStats`](https://github.com/debugtheworldbot/keyStats) 继续开发。许可信息见 [`LICENSE`](LICENSE) 和 [`LICENSE-MIT`](LICENSE-MIT)。
-
-## Keytide 命名与兼容
-
-主 App、Xcode 工程与 scheme 已统一为 `Keytide`，产物为 `Keytide.app`、`Keytide.dmg` 和 `Keytide.zip`。主源码／测试入口为 `Keytide/`、`KeytideTests/` 和 `KeytideCore`。App 图标来自 `Design/Keytide-Icon-v1/Keytide.icon`，菜单栏使用独立单色矢量模板。
-
-为延续已有统计、权限和同步身份，Bundle ID、UserDefaults／Keychain／同步存储标识、`KeyStatsHelper` 服务及 XPC 协议保留原名。GitHub 仓库已迁移到 `Xuan-lprk/KeyTide`；本地仓库根目录、独立 Windows 工程和 c3502 插件包名保留现有路径／身份。它们不是漏改的产品标题；更改这些身份需要单独迁移。历史评审／原型文档中的旧名称属于当时记录。
+本项目基于 [debugtheworldbot/keyStats](https://github.com/debugtheworldbot/keyStats) 继续开发。许可信息见 [LICENSE](LICENSE) 和 [LICENSE-MIT](docs/LICENSE-MIT)。

@@ -1,6 +1,6 @@
 # Keytide macOS 发布流程（手动更新）
 
-当前范围为 macOS DMG / ZIP，App 的更新按钮打开 `Xuan-lprk/KeyTide` 的 Releases 页面。`KeyStatsInAppUpdatesEnabled` 与 `SUEnableAutomaticChecks` 均保持 false；不生成 appcast、不读取 Sparkle 私钥、不启用自动更新。本流程使用现有 ad-hoc 签名，不进行 Developer ID 签名或 Apple 公证。
+当前范围为 macOS DMG / ZIP，App 的更新按钮打开 `Xuan-lprk/KeyTide` 的 Releases 页面。`KeytideInAppUpdatesEnabled` 与 `SUEnableAutomaticChecks` 均保持 false；不生成 appcast、不读取 Sparkle 私钥、不启用自动更新。本流程使用现有 ad-hoc 签名，不进行 Developer ID 签名或 Apple 公证。
 
 ## 本地准备与打包
 
@@ -14,7 +14,7 @@
 ./scripts/build_dmg.sh
 ```
 
-`release.sh` 仅更新主 App Debug / Release 两个配置的 marketing version，并将一致的 build number 加一。它根据主 App 的 Info.plist 路径定位配置，不依赖开发团队 ID；不修改 Helper 或 Windows 版本。重复运行会再次增加 build number，执行后应审查 diff。旧 `publish_release.sh v1.52.2` 仅作为同样的本地准备别名；不再接受旧 output-dir 参数。
+`release.sh` 仅更新主 App Debug / Release 两个配置的 marketing version，并将一致的 build number 加一。它根据主 App 的 Info.plist 路径定位配置，不依赖开发团队 ID；不修改 Helper 版本。重复运行会再次增加 build number，执行后应审查 diff。仓库中不再提供旧 `publish_release.sh` 别名。
 
 Beta 使用 `1.52.2-beta.1` 形式；App 的 marketing version 保持 `1.52.2`，beta 标识留在 Git tag / Release 名称中。每次候选按本地准备流程递增 build number。
 
@@ -28,13 +28,9 @@ Beta 使用 `1.52.2-beta.1` 形式；App 的 marketing version 保持 `1.52.2`�
 
 DMG 和 ZIP 来自同一份嵌入 vendored Helper 后完成签名的 App，不再各自编译。脚本在生成产物前检查 Helper cdhash 是否与 vendor 记录一致；此检查不证明系统 TCC 权限或升级连续性已经通过。构建失败直接退出，不自动重试另一轮归档；失败时不要将 output 中可能保留的上一轮产物当成本次结果。
 
-同步服务地址可选。未提供时显式传入空的 `KEYSTATS_SYNC_SERVICE_URL`，避免继承开发配置；新安装不会取得构建时同步服务地址。已有同步状态及其行为不在本轮修改范围内。确实准备好自有生产同步服务后，可显式设置合法的 HTTPS workers.dev 地址：
+`KEYSTATS_RELEASE_VERSION=X.Y.Z` 可仅覆盖此次打包版本而不改源码；该环境变量名称为现有脚本接口。通常应先明确版本号，再运行版本准备脚本。仅验收当前版本时直接运行打包脚本，不自动递增版本或 build number。脚本会拒绝不合法版本及已开启 App 内更新的配置。
 
-```bash
-KEYSTATS_SYNC_SERVICE_URL=https://your-service.workers.dev ./scripts/build_dmg.sh
-```
-
-`KEYSTATS_RELEASE_VERSION=X.Y.Z` 可仅覆盖此次打包版本而不改源码；通常应先运行版本准备脚本。打包脚本会拒绝不合法版本、非空但不合法的同步地址，以及已开启 App 内更新的配置，避免静默生成不符合本流程的发布包。
+当前产品与打包脚本不提供同步服务配置；不需要 Sync URL、服务端或插件。
 
 脚本回归测试使用合成的构建／签名／磁盘工具，不启动真实 App：
 
@@ -50,9 +46,8 @@ python3 -m unittest discover -s scripts/tests -v
 
 工作流运行脚本契约测试、核心 Swift 测试和 vendored Helper 校验，然后构建 universal macOS DMG / ZIP、生成并校验 SHA256，最后创建当前仓库 Release。Beta 标为 prerelease，不设为 latest。
 
-- 不依赖 Windows 构建，不修改 Windows 发布源码。
+- 只构建 macOS App，不依赖其他平台。
 - 不生成 Sparkle feed，不要求 `SPARKLE_PRIVATE_KEY`。
-- `KEYSTATS_SYNC_PRODUCTION_URL` 仓库变量可留空；非空时传入并校验。
 - 不读取 Homebrew / Scoop token，不向上游或其他仓库推送。
 - build job 只有 contents read；只有创建 Release 的 job 有 contents write。
 
@@ -61,3 +56,13 @@ python3 -m unittest discover -s scripts/tests -v
 最终 UI 定稿后，使用最终 Release 产物验证首次安装、辅助功能授权与真实采集、退出重开、旧版覆盖升级和历史数据保留；确认实际 Helper 身份与权限连续性。另做菜单两套风格、Mac / 机械 Growth 和 Replay、窗口关闭清理、辅助功能与能耗验收。构建或 cdhash 校验不能替代这些真机检查。
 
 未来启用 Sparkle 更新时，需另行验证公私钥匹配、归档签名、feed 和真实升级，并明确授权开启 App 内更新。Developer ID / 公证也作为独立发布路径处理，本轮不变更签名身份或生成密钥。
+
+## 本地安装包验收
+
+1. 以本次脚本成功结束和对应 run 目录为准，校验 `SHA256SUMS`；不要拿失败运行前的旧 output 产物当作新包。
+2. 只读挂载 DMG，检查 `Keytide.app` 与 Applications 快捷方式；解压 ZIP，比较两种包内 App 文件内容、符号链接及签名是否一致。
+3. 主 App／Helper 标识应分别为 `com.xuanlprk.KeyTide`／`com.xuanlprk.KeyTide.helper`。两者二进制应含 arm64 与 x86_64；包内 Helper cdhash 应与 vendor 一致。
+4. 检查 App 图标、版本号、最低 macOS 版本，以及手动更新配置。执行代码签名完整性检查，并单独记录 Gatekeeper 分发评估；ad-hoc 签名不等于 Developer ID、公证或可信分发。
+5. 退出已有主 App 后，从包内复制到 Applications，实际检查启动、菜单、图标、权限提示和“检查更新”目的地址。系统权限由用户手动授予；不为验收关闭 Gatekeeper、执行 TCC reset 或批量移除下载隔离标记。
+
+安装包验收与旧版升级验收分开：首次授权通过不能证明历史数据迁移或升级后的权限连续性。记录无法完成的真机步骤，不用静态包检查代替。

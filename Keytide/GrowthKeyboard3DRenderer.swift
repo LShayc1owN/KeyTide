@@ -1,14 +1,50 @@
 import Cocoa
 import QuartzCore
 
+struct KeyboardViewportState {
+    private(set) var scale: CGFloat = 1
+    private(set) var offset = CGSize.zero
+    func frame(in viewport: CGSize) -> CGRect {
+        CGRect(x: (viewport.width - viewport.width * scale) / 2 + offset.width,
+            y: (viewport.height - viewport.height * scale) / 2 + offset.height,
+            width: viewport.width * scale, height: viewport.height * scale)
+    }
+    mutating func zoom(by factor: CGFloat, at point: CGPoint, in viewport: CGSize) {
+        guard factor.isFinite, factor > 0, viewport.width > 0, viewport.height > 0 else { return }
+        let old = frame(in: viewport)
+        let next = min(2.5, max(0.75, scale * factor))
+        let ratio = next / scale
+        let origin = CGPoint(x: point.x - (point.x - old.minX) * ratio,
+            y: point.y - (point.y - old.minY) * ratio)
+        scale = next
+        offset = CGSize(width: origin.x - (viewport.width - viewport.width * scale) / 2,
+            height: origin.y - (viewport.height - viewport.height * scale) / 2)
+        constrain(in: viewport)
+    }
+    mutating func pan(by delta: CGSize, in viewport: CGSize) {
+        guard delta.width.isFinite, delta.height.isFinite else { return }
+        offset.width += delta.width; offset.height += delta.height
+        constrain(in: viewport)
+    }
+    mutating func constrain(in viewport: CGSize) {
+        let horizontal = max(0, viewport.width * (scale - 1) / 2)
+        let vertical = max(0, viewport.height * (scale - 1) / 2)
+        offset.width = min(horizontal, max(-horizontal, offset.width))
+        offset.height = min(vertical, max(-vertical, offset.height))
+    }
+    mutating func reset() { scale = 1; offset = .zero }
+}
+
 /// Static SceneKit images with a three-frame LRU. Hover/count layers never invoke
 /// SceneKit. Date scrubbing is coalesced; hiding cancels work before it can render.
 final class GrowthKeyboard3DRenderer: NSView {
     typealias RenderFrame = ([GrowthKeyboardKeyUsage], NSColor) -> GrowthKeyboard3DFrame
+    typealias ReplayPress = (GrowthReplayPressPlan, [GrowthKeyboardKeyUsage], NSColor, @escaping () -> Void) -> (() -> Void)
     typealias Schedule = (TimeInterval, @escaping () -> Void) -> (() -> Void)
     private struct CacheKey: Equatable {
         let values: [GrowthKeyboardKeyUsage]
         let background: NSColor
+        let pixelScale: CGFloat
     }
     private struct CachedFrame {
         let key: CacheKey
@@ -16,6 +52,18 @@ final class GrowthKeyboard3DRenderer: NSView {
     }
     let sceneLayout: EditorialKeyboardSceneLayout
     private let renderFrame: RenderFrame?
+    private let renderDetailedFrame: (([GrowthKeyboardKeyUsage], NSColor, CGFloat) -> GrowthKeyboard3DFrame)?
+    private var snapshotPixelScale: CGFloat = 2
+    private let reduceMotion: () -> Bool
+    private let replayPress: ReplayPress?
+    private let replaySceneFactory: (() -> GrowthReplayPressScene)?
+    private var replaySurface: GrowthReplayPressSurface?
+    private var cancelPress: (() -> Void)?
+    private var replayFrom: [GrowthKeyboardKeyUsage]?
+    private var recordedReplay: GrowthReplayPressPlan?
+    private var pressRects: [String: CGRect]?
+    var isReplayingPress: Bool { cancelPress != nil }
+    var replayDrawCount: Int { replaySurface?.drawCount ?? 0 }
     private let schedule: Schedule
     private let imageSize: CGSize
     private let bakesLegends: Bool
@@ -30,7 +78,7 @@ final class GrowthKeyboard3DRenderer: NSView {
     private var cancelPending: (() -> Void)?
     private var generation = 0
     private let overlay = CALayer()
-    private var legends: [String: CATextLayer] = [:]
+    private let legendView: KeyboardLegendOverlay
     private var counts: [String: CATextLayer] = [:]
     private var tracking: NSTrackingArea?
     private var hoveredID: String?
@@ -41,15 +89,25 @@ final class GrowthKeyboard3DRenderer: NSView {
     var cachedFrameCount: Int { cache.count }
     var hasScheduledRender: Bool { cancelPending != nil }
     var onSelectionChanged: ((GrowthKeyboardKeyUsage?) -> Void)?
+    var onReplayProgress: (([GrowthKeyboardKeyUsage], Int) -> Void)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
     init(layout: EditorialKeyboardSceneLayout, renderFrame: RenderFrame? = nil,
          imageSize: CGSize = GrowthKeyboard3DScene.size, bakesLegends: Bool = false,
          usesTransparentCanvas: Bool = false,
+         renderDetailedFrame: (([GrowthKeyboardKeyUsage], NSColor, CGFloat) -> GrowthKeyboard3DFrame)? = nil,
+         replaySceneFactory: (() -> GrowthReplayPressScene)? = nil,
+         replayPress: ReplayPress? = nil,
+         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
          schedule: @escaping Schedule = GrowthKeyboard3DRenderer.scheduleOnMain) {
         sceneLayout = layout
         self.renderFrame = renderFrame
+        self.renderDetailedFrame = renderDetailedFrame
+        legendView = KeyboardLegendOverlay(keys: layout.keys)
+        self.replaySceneFactory = replaySceneFactory
+        self.replayPress = replayPress
+        self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.imageSize = imageSize
         self.bakesLegends = bakesLegends
@@ -57,18 +115,13 @@ final class GrowthKeyboard3DRenderer: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.isGeometryFlipped = true
+        overlay.zPosition = 10
         overlay.anchorPoint = .zero
         overlay.isHidden = true
         overlay.bounds = CGRect(origin: .zero, size: imageSize)
         layer?.addSublayer(overlay)
+        addSubview(legendView)
         for key in layout.keys {
-            let legend = CATextLayer()
-            legend.string = key.legend
-            legend.isHidden = bakesLegends
-            legend.contentsScale = 2
-            legend.alignmentMode = key.legendAlignment
-            legend.bounds = CGRect(origin: .zero, size: key.legendFrame.size)
-            overlay.addSublayer(legend); legends[key.id] = legend
             let count = CATextLayer()
             count.contentsScale = 2; count.alignmentMode = .center
             count.opacity = 0
@@ -80,9 +133,13 @@ final class GrowthKeyboard3DRenderer: NSView {
         setAccessibilityHelp(NSLocalizedString("growth.keyboard.help", comment: "Growth Keyboard"))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { cancelPending?() }
+    deinit { cancelPending?(); cancelPress?() }
 
-    func apply(_ incoming: [GrowthKeyboardKeyUsage], animated: Bool = false, onPresented: (() -> Void)? = nil) {
+    func apply(_ incoming: [GrowthKeyboardKeyUsage], animated: Bool = false, replayFrom: [GrowthKeyboardKeyUsage]? = nil,
+               recordedReplay: GrowthReplayPressPlan? = nil, onPresented: (() -> Void)? = nil) {
+        cancelRender()
+        self.replayFrom = replayFrom
+        self.recordedReplay = recordedReplay
         let byID = Dictionary(uniqueKeysWithValues: incoming.map { ($0.id, $0) })
         requestedValues = sceneLayout.keys.map { byID[$0.id] ?? .init(id: $0.id, count: 0) }
         self.onPresented = onPresented
@@ -97,6 +154,8 @@ final class GrowthKeyboard3DRenderer: NSView {
         else {
             // Keep the latest snapshot acknowledgement for reactivation. Cancelling
             // work must not leave its date/details behind when that image resumes.
+            replayFrom = nil
+            recordedReplay = nil
             cancelRender()
             layer?.removeAnimation(forKey: "growthReplayFrame")
             // Core Animation stores CATransition under its reserved key.
@@ -113,19 +172,30 @@ final class GrowthKeyboard3DRenderer: NSView {
     private func cancelRender() {
         generation &+= 1
         cancelPending?(); cancelPending = nil
+        cancelPress?(); cancelPress = nil
+        replaySurface?.cancel(); pressRects = nil
+        if let currentKey { values = currentKey.values }
+        updateOverlay(); needsDisplay = true
+    }
+
+    func cancelReplayAnimation() {
+        replayFrom = nil
+        recordedReplay = nil
+        cancelRender()
+        layer?.removeAnimation(forKey: kCATransition)
     }
 
     private func requestFrame() {
         guard isActive, !requestedValues.isEmpty else { return }
         let background = usesTransparentCanvas ? NSColor.clear
             : KeyboardVisualizationCanvasView.backgroundColor(for: effectiveAppearance, showsGrowth: true)
-        let key = CacheKey(values: requestedValues, background: background)
+        let key = CacheKey(values: requestedValues, background: background, pixelScale: snapshotPixelScale)
         cancelRender()
-        guard key != currentKey else { completePresentation(); return }
+        guard key != currentKey || recordedReplay?.entries.isEmpty == false else { completePresentation(); return }
         if let index = cache.firstIndex(where: { $0.key == key }) {
             let cached = cache.remove(at: index)
             cache.append(cached)
-            present(cached.frame, key: key)
+            presentAfterPress(cached.frame, key: key)
             return
         }
         // Replay keeps the previous image/counts until the next frame is ready;
@@ -135,25 +205,74 @@ final class GrowthKeyboard3DRenderer: NSView {
             guard let self, self.isActive, self.generation == token else { return }
             self.cancelPending = nil
             let frame: GrowthKeyboard3DFrame
-            if let renderFrame = self.renderFrame { frame = renderFrame(key.values, key.background) }
+            if let renderDetailedFrame = self.renderDetailedFrame { frame = renderDetailedFrame(key.values, key.background, key.pixelScale) }
+            else if let renderFrame = self.renderFrame { frame = renderFrame(key.values, key.background) }
             else {
                 if self.scene == nil { self.scene = GrowthKeyboard3DScene(self.sceneLayout) }
-                frame = self.scene!.render(values: key.values, backgroundColor: key.background)
+                frame = self.scene!.render(values: key.values, backgroundColor: key.background, pixelScale: key.pixelScale)
             }
             self.renderCount += 1
             self.cache.append(CachedFrame(key: key, frame: frame))
             if self.cache.count > 3 { self.cache.removeFirst() }
-            self.present(frame, key: key)
+            self.presentAfterPress(frame, key: key)
         }
     }
 
+    private func presentAfterPress(_ frame: GrowthKeyboard3DFrame, key: CacheKey) {
+        guard let from = replayFrom, let plan = recordedReplay, !plan.entries.isEmpty, animatesPresentation,
+              !reduceMotion() else {
+            present(frame, key: key); return
+        }
+        let token = generation
+        var finishedSynchronously = false
+        let finish: () -> Void = { [weak self] in
+            guard !finishedSynchronously else { return }
+            finishedSynchronously = true
+            guard let self, self.isActive, self.generation == token else { return }
+            self.cancelPress = nil
+            self.replaySurface?.cancel(); self.pressRects = nil
+            self.present(frame, key: key)
+        }
+        if let replayPress {
+            let cancel = replayPress(plan, from, key.background, finish)
+            if !finishedSynchronously { cancelPress = cancel }
+        } else {
+            if replaySurface == nil {
+                let backend: GrowthReplayPressScene
+                if let replaySceneFactory { backend = replaySceneFactory() }
+                else {
+                    guard renderFrame == nil else { present(frame, key: key); return }
+                    if scene == nil { scene = GrowthKeyboard3DScene(sceneLayout) }
+                    backend = GrowthReplayPressScene(mac: scene!)
+                }
+                let surface = GrowthReplayPressSurface(scene: backend, size: imageSize,
+                    supported: Set(sceneLayout.keys.map(\.id)))
+                surface.onRects = { [weak self] rects in self?.pressRects = rects; self?.updateOverlay() }
+                surface.onProgress = { [weak self] values, events in
+                    guard let self else { return }
+                    self.values = values; self.updateOverlay(); self.notifySelection()
+                    self.onReplayProgress?(values, events)
+                }
+                surface.frame = imageRect
+                addSubview(surface, positioned: .below, relativeTo: legendView); replaySurface = surface
+            }
+            if displayedFrame == nil { displayedFrame = frame }
+            values = from; overlay.isHidden = false
+            cancelPress = { [weak self] in self?.replaySurface?.cancel() }
+            replaySurface?.play(plan, values: from, target: key.values, background: key.background, completion: finish)
+        }
+        needsDisplay = true
+    }
+
     private func present(_ frame: GrowthKeyboard3DFrame, key: CacheKey) {
-        if animatesPresentation && displayedFrame != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if animatesPresentation && displayedFrame != nil && !reduceMotion() {
             let transition = CATransition()
             transition.type = .fade; transition.duration = 0.12
             transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             layer?.add(transition, forKey: "growthReplayFrame")
         }
+        replayFrom = nil
+        recordedReplay = nil
         values = key.values
         displayedFrame = frame; currentKey = key
         overlay.isHidden = false
@@ -162,6 +281,7 @@ final class GrowthKeyboard3DRenderer: NSView {
         notifySelection()
         needsDisplay = true
         completePresentation()
+        if key.pixelScale != snapshotPixelScale { requestFrame() }
     }
 
     private func completePresentation() {
@@ -185,13 +305,17 @@ final class GrowthKeyboard3DRenderer: NSView {
         super.layout()
         let rect = imageRect, scale = rect.width / imageSize.width
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        replaySurface?.frame = rect
+        legendView.frame = rect
+        legendView.bounds = CGRect(origin: .zero, size: imageSize)
         overlay.position = rect.origin
         overlay.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
         CATransaction.commit()
     }
     override func draw(_ dirtyRect: NSRect) {
         // Clear the previous snapshot when the visible key area changes size.
-        NSColor.clear.setFill(); dirtyRect.fill()
+        NSColor.clear.setFill(); dirtyRect.fill(using: .copy)
+        guard replaySurface?.isHidden != false else { return }
         displayedFrame?.image.draw(in: imageRect, from: .zero, operation: .sourceOver,
             fraction: 1, respectFlipped: true, hints: nil)
     }
@@ -204,45 +328,41 @@ final class GrowthKeyboard3DRenderer: NSView {
             frame.image.draw(in: CGRect(origin: .zero, size: self.imageSize), from: .zero,
                              operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             guard !self.bakesLegends else { return }
-            for key in self.sceneLayout.keys {
-                guard let rect = frame.rects[key.id] else { continue }
-                let scale = rect.width / key.size.width
-                let legendScale = scale * key.size.width / key.rect.width
-                let center = CGPoint(x: rect.minX + key.legendFrame.midX * scale,
-                                     y: rect.midY + (key.legendFrame.midY - key.size.height / 2) * scale)
-                NSGraphicsContext.saveGraphicsState()
-                let transform = NSAffineTransform()
-                transform.translateX(by: center.x, yBy: center.y)
-                transform.scale(by: legendScale)
-                transform.concat()
-                key.legend.draw(in: CGRect(x: -key.legendFrame.width / 2, y: -key.legendFrame.height / 2,
-                                           width: key.legendFrame.width, height: key.legendFrame.height))
-                NSGraphicsContext.restoreGraphicsState()
-            }
+            KeyboardLegendLayout.draw(keys: self.sceneLayout.keys, rects: frame.rects)
         }) else { return nil }
         return KeyboardImageBitmap.image(bitmap)
     }
 
     private func updateOverlay() {
         guard let frame = displayedFrame else { return }
+        legendView.isHidden = bakesLegends
+        legendView.rects = pressRects ?? frame.rects
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for (key, usage) in zip(sceneLayout.keys, values) {
-            guard let rect = frame.rects[key.id], let legend = legends[key.id], let count = counts[key.id] else { continue }
-            legend.isHidden = bakesLegends
-            let scale = rect.width / key.size.width
+            guard let rect = (pressRects ?? frame.rects)[key.id], let count = counts[key.id] else { continue }
             let showCount = key.id == hoveredID || key.id == selectedKeyID
-            legend.position = CGPoint(x: rect.minX + key.legendFrame.midX * scale,
-                y: rect.midY + (key.legendFrame.midY - key.size.height / 2) * scale - (showCount ? 6 * scale : 0))
-            let legendScale = scale * key.size.width / key.rect.width
-            legend.setAffineTransform(CGAffineTransform(scaleX: legendScale, y: legendScale))
-            count.frame = CGRect(x: rect.minX, y: rect.maxY - (key.size.height < 72 ? 15 : 23) * scale,
-                width: rect.width, height: (key.size.height < 72 ? 13 : 19) * scale)
-            count.string = NSAttributedString(string: NumberFormatter.localizedString(from: NSNumber(value: usage.count), number: .decimal),
-                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: (key.size.height < 72 ? 11 : 13) * scale, weight: .regular),
-                             .foregroundColor: NSColor(srgbRed: 51/255, green: 69/255, blue: 79/255, alpha: 1)])
+            count.frame = CGRect(x: rect.minX + 2, y: rect.minY + rect.height * 0.78,
+                width: max(1, rect.width - 4), height: rect.height * 0.22)
+            let text = NumberFormatter.localizedString(from: NSNumber(value: usage.count), number: .decimal)
+            var font = min(11, count.frame.height * 0.80)
+            let width = (text as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: font, weight: .regular)]).width
+            font *= min(1, count.frame.width / max(1, width))
+            count.string = NSAttributedString(string: text, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: font, weight: .regular),
+                .foregroundColor: KeyboardLegendLayout.ink])
             count.opacity = showCount ? 1 : 0
         }
         CATransaction.commit()
+    }
+
+    func updateDisplayResolution() {
+        let pixels = window?.convertToBacking(convert(imageRect, to: nil)).width ?? imageRect.width * 2
+        let scale = min(5, max(2, ceil(pixels / imageSize.width * 2) / 2))
+        guard scale != snapshotPixelScale else { return }
+        snapshotPixelScale = scale
+        counts.values.forEach { $0.contentsScale = scale }
+        legendView.layer?.contentsScale = window?.backingScaleFactor ?? 2
+        if !isReplayingPress { requestFrame() }
     }
 
     func selectKey(_ id: String?) {
@@ -251,7 +371,7 @@ final class GrowthKeyboard3DRenderer: NSView {
     }
     func clearHover() { hoveredID = nil; updateOverlay() }
     func selectedKeyFrame() -> CGRect? {
-        guard let selectedKeyID, let frame = displayedFrame?.rects[selectedKeyID] else { return nil }
+        guard let selectedKeyID, let frame = (pressRects ?? displayedFrame?.rects ?? [:])[selectedKeyID] else { return nil }
         let scale = imageRect.width / imageSize.width
         return CGRect(x: imageRect.minX + frame.minX * scale,
             y: imageRect.minY + frame.minY * scale,
@@ -266,7 +386,7 @@ final class GrowthKeyboard3DRenderer: NSView {
         guard let frame = displayedFrame, imageRect.contains(point) else { return nil }
         let scale = imageRect.width / imageSize.width
         let local = CGPoint(x: (point.x - imageRect.minX) / scale, y: (point.y - imageRect.minY) / scale)
-        return sceneLayout.keys.reversed().first { frame.rects[$0.id]?.contains(local) == true }?.id
+        return sceneLayout.keys.reversed().first { (pressRects ?? frame.rects)[$0.id]?.contains(local) == true }?.id
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

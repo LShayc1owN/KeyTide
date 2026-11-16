@@ -59,6 +59,9 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
     private var showMouseClicksButton: NSSwitch!
     private var minimalMenuBarModeButton: NSSwitch!
     private var appStatsEnabledButton: NSSwitch!
+    private var replayRecordingButton: NSSwitch!
+    private var replayStatusLabel: NSTextField!
+    private var replayObserver: NSObjectProtocol?
     private var launchAtLoginButton: NSSwitch!
     private var dynamicIconColorButton: NSSwitch!
     private var dynamicIconColorStylePopUp: NSPopUpButton!
@@ -141,6 +144,9 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
         super.viewDidLoad()
         setupUI()
         updateState()
+        replayObserver = NotificationCenter.default.addObserver(forName: .keyReplayRecordingChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.updateReplayState()
+        }
         updateAppearance()
         appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async {
@@ -169,6 +175,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        updateReplayState()
         updateState()
         updateAppearance()
     }
@@ -187,6 +194,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
     }
 
     deinit {
+        if let replayObserver { NotificationCenter.default.removeObserver(replayObserver) }
         appearanceObservation = nil
         if let observer = systemThemeObserver {
             DistributedNotificationCenter.default().removeObserver(observer)
@@ -432,6 +440,10 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
         addArrangedSubviewFillingWidth(appStatsRow, to: trackingStack)
         addArrangedSubviewFillingWidth(makeOptionDividerContainer(), to: trackingStack)
         addArrangedSubviewFillingWidth(launchRow, to: trackingStack)
+        addArrangedSubviewFillingWidth(makeOptionDividerContainer(), to: trackingStack)
+        let welcomeButton = NSButton(title: NSLocalizedString("welcome.reopen", comment: ""), target: self, action: #selector(reopenWelcome))
+        welcomeButton.bezelStyle = .rounded
+        trackingStack.addArrangedSubview(welcomeButton)
 
         dynamicIconOptionsContainer = makeVerticalStack(spacing: 6)
         addArrangedSubviewFillingWidth(makeOptionDividerContainer(), to: dynamicIconOptionsContainer)
@@ -515,7 +527,21 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
 
         let actionSection = makeSection(titleKey: "settings.section.data", content: actionStack)
 
-        pages = [[trackingSection], [menuBarSection, feedbackSection], [notificationSection], [actionSection, resetSection]]
+        replayRecordingButton = makeSwitch(action: #selector(toggleReplayRecording))
+        replayStatusLabel = NSTextField(wrappingLabelWithString: "")
+        replayStatusLabel.font = .systemFont(ofSize: 11); replayStatusLabel.textColor = .secondaryLabelColor
+        let replayHelp = NSTextField(wrappingLabelWithString: NSLocalizedString("replay.recording.help", comment: ""))
+        replayHelp.font = .systemFont(ofSize: 11); replayHelp.textColor = .secondaryLabelColor
+        let replayOptions = makeVerticalStack(spacing: 10)
+        for child in [makeSwitchRow(titleKey: "replay.recording.enable", toggle: replayRecordingButton), replayHelp, replayStatusLabel!] {
+            addArrangedSubviewFillingWidth(child, to: replayOptions)
+        }
+        let deleteReplay = NSButton(title: NSLocalizedString("replay.recording.delete", comment: ""), target: self, action: #selector(deleteReplayRecords))
+        deleteReplay.bezelStyle = .rounded
+        replayOptions.addArrangedSubview(deleteReplay)
+        let replaySection = makeSection(titleKey: "replay.recording.title", content: replayOptions)
+        updateReplayState()
+        pages = [[trackingSection], [menuBarSection, feedbackSection], [notificationSection], [actionSection, replaySection, resetSection]]
         navigation.reloadData()
         navigation.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         showPage(0)
@@ -536,6 +562,37 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
             contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -28),
             contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -24)
         ])
+    }
+
+    private func updateReplayState() {
+        replayRecordingButton?.state = KeyReplayRecording.shared.isEnabled ? .on : .off
+        replayStatusLabel?.stringValue = NSLocalizedString(KeyReplayRecording.shared.statusKey, comment: "")
+    }
+
+    @objc private func toggleReplayRecording() {
+        if replayRecordingButton.state == .on {
+            let alert = NSAlert()
+            alert.messageText = NSLocalizedString("replay.consent.title", comment: "")
+            alert.informativeText = NSLocalizedString("replay.consent.body", comment: "")
+            alert.addButton(withTitle: NSLocalizedString("replay.consent.enable", comment: ""))
+            alert.addButton(withTitle: NSLocalizedString("button.cancel", comment: ""))
+            guard alert.runModal() == .alertFirstButtonReturn else { updateReplayState(); return }
+        }
+        KeyReplayRecording.shared.setEnabled(replayRecordingButton.state == .on)
+        updateReplayState()
+    }
+
+    @objc private func deleteReplayRecords() {
+        let alert = NSAlert()
+        alert.messageText = NSLocalizedString("replay.delete.title", comment: "")
+        alert.informativeText = NSLocalizedString("replay.delete.body", comment: "")
+        alert.addButton(withTitle: NSLocalizedString("replay.recording.delete", comment: ""))
+        alert.addButton(withTitle: NSLocalizedString("button.cancel", comment: ""))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        KeyReplayRecording.shared.deleteAll { [weak self] ok in
+            self?.updateReplayState()
+            if !ok { let failure = NSAlert(); failure.messageText = NSLocalizedString("replay.delete.failed", comment: ""); failure.runModal() }
+        }
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -581,6 +638,12 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
         for section in pages[index] { addArrangedSubviewFillingWidth(section, to: contentStack) }
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = 0.16
+        transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        contentStack.layer?.add(transition, forKey: "settingsPage")
     }
 
     private func makeActionRow(_ title: String, help: String, button: NSButton) -> NSView {
@@ -1237,6 +1300,8 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
         UserDefaults.standard.set(rawValue, forKey: dynamicIconColorStyleKey)
         StatsManager.shared.menuBarUpdateHandler?()
     }
+
+    @objc private func reopenWelcome() { AppDelegate.shared?.showOnboarding(restart: true) }
 
     @objc private func toggleLaunchAtLogin() {
         let shouldEnable = launchAtLoginButton.state == .on

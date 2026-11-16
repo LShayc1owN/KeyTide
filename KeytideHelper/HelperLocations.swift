@@ -1,11 +1,11 @@
 import Foundation
 
 enum HelperLocations {
-    static let mainBundleId = "com.xuanlprk.KeyStatsMac"
-    static let helperBundleId = "com.xuanlprk.KeyStatsMac.helper"
-    static let machServiceName = "com.xuanlprk.KeyStatsMac.helper"
-    static let launchAgentLabel = "com.xuanlprk.KeyStatsMac.helper"
-    static let interfaceVersion = 1
+    static let mainBundleId = "com.xuanlprk.KeyTide"
+    static let helperBundleId = "com.xuanlprk.KeyTide.helper"
+    static let machServiceName = "com.xuanlprk.KeyTide.helper"
+    static let launchAgentLabel = "com.xuanlprk.KeyTide.helper"
+    static let interfaceVersion = 2
 
     static var installDir: URL {
         let base = try! FileManager.default.url(
@@ -14,15 +14,15 @@ enum HelperLocations {
             appropriateFor: nil,
             create: true
         )
-        return base.appendingPathComponent("KeyStatsMac/Helper", isDirectory: true)
+        return base.appendingPathComponent("Keytide/Helper", isDirectory: true)
     }
 
     static var installedHelperURL: URL {
-        installDir.appendingPathComponent("KeyStatsHelper.app", isDirectory: true)
+        installDir.appendingPathComponent("KeytideHelper.app", isDirectory: true)
     }
 
     static var installedHelperBinaryURL: URL {
-        installedHelperURL.appendingPathComponent("Contents/MacOS/KeyStatsHelper")
+        installedHelperURL.appendingPathComponent("Contents/MacOS/KeytideHelper")
     }
 
     static var launchAgentPlistURL: URL {

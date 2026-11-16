@@ -3,11 +3,18 @@ import UniformTypeIdentifiers
 
 /// A full-width, on-demand 3D stage. The two menu styles share one layout.
 final class KeyboardVisualizationViewController: NSViewController {
-    private let growth = GrowthKeyboardViewController(manager: .shared, startsIn3D: true)
+    private let growth = GrowthKeyboardViewController(manager: .shared, startsIn3D: true,
+        loadReplay: { day, completion in KeyReplayRecording.shared.load(day: day, completion: completion) })
     private let models = NSSegmentedControl()
+    private let devices = NSSegmentedControl()
+    private let trackpad = TrackpadStudioView()
+    private var studioTitle: NSTextField?
+    private var showsTrackpad: Bool { devices.selectedSegment == 1 }
     private let interaction = NSSegmentedControl()
     private let stage = KeyboardStudioStageView()
-    private let content = NSView()
+    private let content = KeyboardStudioViewport()
+    private let fitButton = NSButton()
+    private var viewportObservers: [NSObjectProtocol] = []
     private let insight = KeyboardKeyInsightCard()
     private let typingPanel = KeyboardStudioPanel()
     private let typingKey = keyboardStudioLabel("—", size: 22, weight: .medium)
@@ -32,6 +39,7 @@ final class KeyboardVisualizationViewController: NSViewController {
     deinit {
         typingSelectionObservers.values.forEach(NotificationCenter.default.removeObserver)
         if let styleObserver { NotificationCenter.default.removeObserver(styleObserver) }
+        viewportObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     override func loadView() {
@@ -48,6 +56,13 @@ final class KeyboardVisualizationViewController: NSViewController {
 
         let brand = keyboardStudioLabel("K E Y T I D E", size: 10, weight: .semibold)
         let title = keyboardStudioLabel(NSLocalizedString("growth.title", comment: ""), size: 20, weight: .semibold)
+        studioTitle = title
+        devices.segmentCount = 2
+        devices.setLabel(NSLocalizedString("trackpad.keyboard", comment: ""), forSegment: 0)
+        devices.setLabel(NSLocalizedString("trackpad.title", comment: ""), forSegment: 1)
+        devices.selectedSegment = 0; devices.controlSize = .small
+        devices.target = self; devices.action = #selector(changeDevice)
+        devices.setAccessibilityLabel(NSLocalizedString("trackpad.stage", comment: ""))
         totalCaption.stringValue = NSLocalizedString("growth.metric.caption", comment: "")
         let totalBlock = keyboardStudioStack([totalCaption, total], vertical: true, spacing: 2)
         date.maximumNumberOfLines = 2
@@ -55,7 +70,7 @@ final class KeyboardVisualizationViewController: NSViewController {
         date.cell?.isScrollable = false
         date.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         date.widthAnchor.constraint(lessThanOrEqualToConstant: 400).isActive = true
-        let heading = keyboardStudioStack([brand, title, totalBlock, date], vertical: true, spacing: 4)
+        let heading = keyboardStudioStack([NSStackView(views: [brand, devices]), title, totalBlock, date], vertical: true, spacing: 4)
         models.segmentCount = 2
         models.setLabel("Mac", forSegment: 0)
         models.setLabel(NSLocalizedString("keyboard.model.mechanical", comment: ""), forSegment: 1)
@@ -75,7 +90,12 @@ final class KeyboardVisualizationViewController: NSViewController {
         exportButton.setAccessibilityLabel(exportButton.toolTip)
         exportButton.target = self
         exportButton.action = #selector(showImageActions)
-        let header = NSStackView(views: [heading, keyboardStudioSpace(), models, interaction, exportButton])
+        fitButton.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: nil)
+        fitButton.bezelStyle = .texturedRounded
+        fitButton.toolTip = NSLocalizedString("keyboard.viewport.fit", comment: "")
+        fitButton.setAccessibilityLabel(fitButton.toolTip)
+        fitButton.target = self; fitButton.action = #selector(fitKeyboard)
+        let header = NSStackView(views: [heading, keyboardStudioSpace(), models, interaction, fitButton, exportButton])
         header.alignment = .centerY; header.spacing = 10
         header.translatesAutoresizingMaskIntoConstraints = false
         stage.addSubview(header)
@@ -112,10 +132,31 @@ final class KeyboardVisualizationViewController: NSViewController {
             replayToggle.heightAnchor.constraint(equalToConstant: 28)
         ])
 
+        trackpad.translatesAutoresizingMaskIntoConstraints = false
+        stage.addSubview(trackpad)
+        NSLayoutConstraint.activate([
+            trackpad.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            trackpad.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            trackpad.topAnchor.constraint(equalTo: content.topAnchor),
+            trackpad.bottomAnchor.constraint(equalTo: stage.bottomAnchor, constant: -18)
+        ])
+        trackpad.isHidden = true
         addChild(growth)
-        content.addSubview(growth.view)
+        content.canvas.addSubview(growth.view)
         growth.view.frame = content.bounds
         growth.view.autoresizingMask = [.width, .height]
+        content.onChange = { [weak self] in
+            guard let self else { return }
+            self.growth.view.frame = self.content.canvas.bounds
+            self.layoutSurfaces(); self.positionInsight()
+        }
+        content.onGestureEnd = { [weak self] in
+            guard let self else { return }
+            self.growth.updateDisplayResolution()
+            self.surfaces.values.forEach { $0.updateDisplayResolution() }
+            self.positionInsight()
+        }
+        content.toolTip = NSLocalizedString("keyboard.viewport.help", comment: "")
         growth.onSummaryChanged = { [weak self] total, date, coverage in
             self?.total.stringValue = total
             if let self { self.totalCaption.stringValue = self.growth.metricTitle }
@@ -128,6 +169,7 @@ final class KeyboardVisualizationViewController: NSViewController {
         }
         insight.onClose = { [weak self] in self?.dismissInsight() }
         stage.onBackgroundClick = { [weak self] in self?.dismissInsight() }
+        content.onBackgroundClick = { [weak self] in self?.dismissInsight() }
         insight.isHidden = true
         stage.addSubview(insight)
         // Position in stage coordinates directly; AppKit anchors use visual
@@ -181,13 +223,29 @@ final class KeyboardVisualizationViewController: NSViewController {
     }
 
     private func updateInsight() {
-        guard let selection, !prefersInteraction else {
-            insight.isHidden = true
+        guard let selection, !prefersInteraction, !showsTrackpad else {
+            animateInsight(visible: false)
             return
         }
         insight.update(selection, palette: palette)
+        let newlyVisible = insight.isHidden
         insight.isHidden = false
         positionInsight()
+        if newlyVisible { animateInsight(visible: true) }
+    }
+
+    private func animateInsight(visible: Bool) {
+        guard !insight.isHidden || visible else { return }
+        insight.layer?.removeAnimation(forKey: "insightOpacity")
+        insight.alphaValue = 1
+        insight.isHidden = !visible
+        guard visible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 0
+        animation.toValue = 1
+        animation.duration = 0.14
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        insight.layer?.add(animation, forKey: "insightOpacity")
     }
 
     private func positionInsight() {
@@ -271,10 +329,20 @@ final class KeyboardVisualizationViewController: NSViewController {
 
     func showDay(_ date: Date) {
         _ = view
+        devices.selectedSegment = 0; changeDevice()
         prefersInteraction = false
         changeModel()
         if replayCollapsed { toggleReplay() }
         growth.showDay(date)
+    }
+
+    func showExample() {
+        _ = view
+        devices.selectedSegment = 0; changeDevice()
+        prefersInteraction = false
+        changeModel()
+        if replayCollapsed { toggleReplay() }
+        growth.showExample()
     }
 
     @objc private func exportKeyboardImage() {
@@ -321,15 +389,40 @@ final class KeyboardVisualizationViewController: NSViewController {
 
     @objc private func toggleReplay() {
         replayCollapsed.toggle()
-        replayHeight?.constant = replayCollapsed ? 24 : 48
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0 : 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            replayHeight?.constant = replayCollapsed ? 24 : 48
+            context.allowsImplicitAnimation = !reduceMotion
+            growth.transportView.superview?.layoutSubtreeIfNeeded()
+        }
         growth.setTransportCollapsed(replayCollapsed)
         replayToggle.image = NSImage(systemSymbolName: replayCollapsed ? "chevron.up" : "chevron.down",
             accessibilityDescription: nil)
+        replayToggle.setAccessibilityExpanded(!replayCollapsed)
         insight.isHidden = selection == nil || prefersInteraction
         positionInsight()
     }
 
+    @objc private func changeDevice() {
+        let showing = showsTrackpad
+        trackpad.isHidden = !showing; trackpad.setPresented(showing)
+        content.isHidden = showing
+        for control in [models, interaction, fitButton, exportButton] { control.isHidden = showing }
+        total.isHidden = showing; totalCaption.isHidden = showing; date.isHidden = showing
+        studioTitle?.stringValue = NSLocalizedString(showing ? "trackpad.title" : "growth.title", comment: "")
+        if showing {
+            growth.setPresented(false)
+            surfaces.values.forEach { $0.cancel() }
+            growth.transportView.isHidden = true; replayToggle.isHidden = true
+            typingPanel.isHidden = true; insight.isHidden = true
+            view.window?.makeFirstResponder(devices)
+        } else { changeModel() }
+    }
+
     @objc private func changeModel() {
+        guard !showsTrackpad else { return }
         let index = models.selectedSegment
         if prefersInteraction && surfaces[index] == nil {
             do {
@@ -337,7 +430,7 @@ final class KeyboardVisualizationViewController: NSViewController {
                 if index == 0 { try model.configureMacModel() }
                 else { try model.configureFullModel() }
                 let surface = MechanicalKeyboardView(model: model, embedded: true)
-                content.addSubview(surface)
+                content.canvas.addSubview(surface)
                 surfaces[index] = surface
                 surface.applyStudioStyle()
                 typingSelectionObservers[index] = NotificationCenter.default.addObserver(
@@ -367,6 +460,7 @@ final class KeyboardVisualizationViewController: NSViewController {
         typingKey.stringValue = "—"
         updateInsight()
         layoutSurfaces()
+        content.onGestureEnd?()
         if prefersInteraction, let surface = surfaces[index] {
             surface.nextKeyView = interaction
             models.nextKeyView = surface
@@ -388,21 +482,50 @@ final class KeyboardVisualizationViewController: NSViewController {
         positionInsight()
     }
 
+    @objc private func fitKeyboard() { content.reset() }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        viewportObservers.forEach(NotificationCenter.default.removeObserver)
+        viewportObservers = []
+        if let window = view.window {
+            for name in [NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification] {
+                viewportObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    self?.content.cancelGestures()
+                    if name == NSWindow.didResignKeyNotification { self?.trackpad.suspendRendering() }
+                    else { self?.trackpad.stop() }
+                    if name == NSWindow.willCloseNotification { self?.content.reset() }
+                })
+            }
+        }
+        viewportObservers.append(NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.content.cancelGestures()
+            self?.trackpad.stop()
+        })
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        trackpad.stop()
+    }
+
     private func layoutSurfaces() {
         for surface in surfaces.values {
-            let scale = max(0.01, min(content.bounds.width / MechanicalKeyboardView.size.width,
-                content.bounds.height / MechanicalKeyboardView.size.height))
+            let scale = max(0.01, min(content.canvas.bounds.width / MechanicalKeyboardView.size.width,
+                content.canvas.bounds.height / MechanicalKeyboardView.size.height))
             let size = CGSize(width: MechanicalKeyboardView.size.width * scale,
                 height: MechanicalKeyboardView.size.height * scale)
-            surface.frame = CGRect(x: (content.bounds.width - size.width) / 2,
-                y: (content.bounds.height - size.height) / 2, width: size.width, height: size.height)
+            surface.frame = CGRect(x: (content.canvas.bounds.width - size.width) / 2,
+                y: (content.canvas.bounds.height - size.height) / 2, width: size.width, height: size.height)
             surface.setBoundsSize(MechanicalKeyboardView.size)
         }
     }
 
     func refreshForPresentation(resetToToday: Bool) {
         _ = view
-        growth.setPresented(!growth.view.isHidden)
+        if showsTrackpad { trackpad.setPresented(true) }
+        growth.setPresented(!growth.view.isHidden && !showsTrackpad)
         growth.refreshData(resetToToday: resetToToday)
+        content.onGestureEnd?()
     }
 }

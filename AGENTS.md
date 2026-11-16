@@ -73,7 +73,9 @@ Keytide 是 macOS 13+ 原生菜单栏应用，主工程使用 Swift 5、AppKit�
 
 ## 隐私边界
 
-Keytide 不是 keylogger。
+默认仍仅保存聚合统计。2026-11-15 用户明确批准新增可选的跨 App 真实回放：使用者明确知情开启后，可在本机加密保存物理键位、按下／松开顺序、毫秒时间及对应成长参与键，长期保留直到手动删除。这些序列可能推断输入内容，不能宣称“不记录输入顺序”或保证不包含敏感输入。
+
+真实回放默认关闭，独立于 Analytics；开启前说明风险与保留规则，菜单栏显示开启状态，提供停止及删除控制。明细不得上传、写入日志或加入普通统计导出；不读取文本字段、窗口内容或剪贴板。不绕过系统安全输入。旧历史不能还原顺序，回放不得重复写统计。以下禁令继续适用于默认聚合模式及所有其他功能。
 
 永远不要记录、持久化、导出或上传：
 
@@ -92,7 +94,9 @@ Keytide 不是 keylogger。
 - KPS / CPS 与峰值。
 - 分应用聚合数据。
 
-当前鼠标移动坐标会在内存中以采样后的事件经过 XPC，用于计算相邻点距离；它们不得被日志化、持久化、上传或改造成轨迹历史。按键事件中的 key code 只应用于生成聚合键名和计数，不得形成可回放的原始按键序列。
+真实回放的上述明确授权是按键顺序本机存储的唯一例外，不放宽其他数据或上传边界。
+
+当前鼠标移动坐标会在内存中以采样后的事件经过 XPC，用于计算相邻点距离；它们不得被日志化、持久化、上传或改造成轨迹历史。默认模式中的 key code 只用于聚合；真实回放开启后允许上述本机序列，不能用于 Analytics 或网络传输。
 
 分应用统计由 `AppActivityTracker` 根据事件来源 PID 解析 bundle ID 和显示名，再由 `StatsManager` 聚合。此数据主要供用户本地查看，不得自动用于产品 Analytics。
 
@@ -102,7 +106,7 @@ Keytide 不是 keylogger。
 
 ```text
 macOS input events
-→ KeyStatsHelper
+→ KeytideHelper
 → EventTapController / listen-only CGEventTap
 → PayloadBuilder
 → HelperXPCListener
@@ -125,20 +129,20 @@ macOS input events
   - 安装并连接 Helper，设置 XPC event sink。
   - 协调辅助功能权限提示、授权轮询与 Helper 启动。
   - 通过 `AnalyticsManager` 发出既有产品事件。
-- `KeyStatsHelper/main.swift`
+- `KeytideHelper/main.swift`
   - 启动 `HelperXPCListener` 并保持 Helper run loop。
-- `KeyStatsHelper/Package.swift`、`KeyStatsHelper/README.md`、`KeyStatsHelper/Tests/`
+- `KeytideHelper/Package.swift`、`KeytideHelper/README.md`、`KeytideHelper/Tests/`
   - 独立、无第三方依赖的原生 Helper SwiftPM 构建／测试入口，直接复用正式十份 Swift 源码。SwiftPM 裸可执行文件不替代签名 `.app` 或既有安装流程，不以 `swift run` 启动已安装的服务。
   - 新包清单、README 和具体测试文件通过主工程 helper 同步目录例外排除；新增测试必须同步排除其路径，避免 XCTest 进入生产。根 SwiftPM 的 `KeytideEventCore` 继续直接编译原有四份事件源码。
   - 独立插件已从本仓库移除，其参考说明仅保留在本地忽略的 docs/local-reference/。不得向外部发送原始按键／移动 payload，不放宽现有 XPC 鉴权。
-- `KeyStatsHelper/EventTapController.swift`
+- `KeytideHelper/EventTapController.swift`
   - Helper 内唯一正式 `CGEventTap` 所有者。
   - 使用 `.listenOnly` 的 `.cgSessionEventTap` 监听键盘、点击、滚轮和移动事件。
   - 当前对鼠标移动/拖动进行约 30 Hz 采样，并处理 event tap 被禁用后的恢复。
-- `KeyStatsHelper/PayloadBuilder.swift`
+- `KeytideHelper/PayloadBuilder.swift`
   - 将 `CGEvent` 转成受限的 XPC 字典字段。
   - 不传输用户文本；移动坐标只用于主 App 计算聚合距离。
-- `KeyStatsHelper/HelperXPCListener.swift`
+- `KeytideHelper/HelperXPCListener.swift`
   - 提供 XPC 服务、校验主 App 的签名标识和当前用户 UID。
   - 管理单个活动连接、权限握手、tap 生命周期和事件转发。
 - `Keytide/HelperSupervisor.swift`
@@ -199,7 +203,7 @@ macOS input events
 
 以下模块已形成相互依赖的稳定链路，不要仅以“现代化”“代码较老”或“准备迁移 SwiftUI”为理由重写：
 
-- `KeyStatsHelper`
+- `KeytideHelper`
 - `CGEventTap`
 - XPC 协议与连接
 - `HelperSupervisor`
@@ -218,10 +222,10 @@ macOS input events
 - build-only 不等于启动授权。普通 Debug 仍执行 `HelperSupervisor.ensureInstalled()`、LaunchAgent 管理、旧权限迁移；Sparkle 还需有效公钥与显式 App 内更新开关均就绪才启动；Debug 跳过部分权限提示不表示这些副作用关闭。
 - `--debug-gui-acceptance` 仅在 Debug 生效，跳过上述安装/迁移与 Sparkle 初始化。`UpdateManager` 的初始化、popover 探测、手动更新入口均有策略 guard，不能只在 AppDelegate 中跳过单例就宣称 updater 不会创建。
 - 在上述验收模式内可加 `--debug-open-keyboard` 或 `--debug-open-statistics` 请求显示相应界面；这些便捷入口仅 Debug 编译，不写 defaults，也不改变验收模式的其他数据与 Helper 边界。
-- 验收模式仍连接现有 Helper。协议版本必须等于 `KeyStatsHelper/HelperLocations.swift` 的 `interfaceVersion`；兼容且已有授权时仍会 `startMonitoring`，没有授权或连接失败时仅报告，不安装修复、不权限轮询或自动重连。
+- 验收模式仍连接现有 Helper。协议版本必须等于 `KeytideHelper/HelperLocations.swift` 的 `interfaceVersion`；兼容且已有授权时仍会 `startMonitoring`，没有授权或连接失败时仅报告，不安装修复、不权限轮询或自动重连。
 - 此模式不是只读数据沙盒或全局离线模式；正式 StatsManager 持久化、Analytics consent、Sync 启动及退出时 flush 仍存在。Helper 只接受一个活动连接，不同时运行两份主 App。
 - 普通安装路径在 Helper 缺失、任一 cdhash 读取失败或 hash 不同时复制；即使 hash 相同，LaunchAgent plist 不同或服务未加载仍可能写配置/注册服务。hash 一致不能单独证明普通启动无系统改动。
-- 2026-10-25 用户授权更新来源迁移：`Keytide/Info.plist` 已指向 `Xuan-lprk/KeyTide` 的 appcast，`SUEnableAutomaticChecks = false`，上游公钥已替换为用户提供的公钥。`KeyStatsInAppUpdatesEnabled = false`，仅配置公钥不启用更新；未明确开启 App 内更新或公钥无效时，`UpdateManager` 初始化、探测和订阅不创建 Sparkle；普通模式的手动入口仅打开自己的 Releases 页面。不得自行生成/导出私钥、启用自动更新或发布；Keychain、CI Secret、签名和首发验收仍需相应授权。
+- 2026-10-25 用户授权更新来源迁移：`Keytide/Info.plist` 已指向 `Xuan-lprk/KeyTide` 的 appcast，`SUEnableAutomaticChecks = false`，上游公钥已替换为用户提供的公钥。`KeytideInAppUpdatesEnabled = false`，仅配置公钥不启用更新；未明确开启 App 内更新或公钥无效时，`UpdateManager` 初始化、探测和订阅不创建 Sparkle；普通模式的手动入口仅打开自己的 Releases 页面。不得自行生成/导出私钥、启用自动更新或发布；Keychain、CI Secret、签名和首发验收仍需相应授权。
 
 ## UI 技术方向
 
@@ -373,3 +377,11 @@ xcodebuild \
 - 不自动应用 D1 migration，不自动发布 DMG、release 或 Scoop 包。
 - 多设备同步不是近期开发重点；除非用户明确要求，不主动修改同步协议、Crypto、远端缓存、Worker 或部署配置。
 - 如果任务确实涉及同步，优先保持现有 E2EE、schema、设备绑定和历史兼容行为，并运行对应 Core/Worker 测试。
+
+## 2026-11-11：产品身份统一
+
+主 App 标识符为 `com.xuanlprk.KeyTide`；Helper、Mach service 与 LaunchAgent 为 `com.xuanlprk.KeyTide.helper`。Helper 源码、内置包和安装目录统一为 KeytideHelper / Keytide。旧主 App defaults 域在启动读取任何单例前一次性复制，已有新值优先，不合并日快照、不删除旧域。旧 Helper 注册仅在 plist 身份及可执行路径完全匹配时退出并移除 plist，旧文件和 TCC 条目不删除。权限不能自动迁移；新 Helper 需要用户重新授权。源码中的旧标识仅保留用于迁移与历史记录。
+
+## 2026-11-16: Trackpad recording exception
+
+The user explicitly approved opt-in background trackpad-surface recording, locally encrypted with a separate device-only Keychain key and retained until manual deletion. This exception covers normalized finger positions, contact identity/state/order, source timestamps and uncalibrated relative pressure. It does not authorize screen-pointer trajectories, text, screen content, uploads, Analytics, or inclusion in ordinary statistics export. Preview starts when its stage opens; persistent recording requires separate consent and continues after closing Studio. Private API device compatibility, sleep/reconnect, energy and physical haptics require real-device acceptance.

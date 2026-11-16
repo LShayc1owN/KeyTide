@@ -18,7 +18,7 @@ python3 - <<'PYTHON'
 import plistlib
 with open("Keytide/Info.plist", "rb") as source:
     info = plistlib.load(source)
-if info.get("KeyStatsInAppUpdatesEnabled") is not False or info.get("SUEnableAutomaticChecks") is not False:
+if info.get("KeytideInAppUpdatesEnabled") is not False or info.get("SUEnableAutomaticChecks") is not False:
     raise SystemExit("Manual release packaging requires in-app and automatic updates to remain disabled.")
 PYTHON
 
@@ -56,8 +56,8 @@ ditto "$APP_PATH" "$STAGING_DIR/Keytide.app"
 "$SCRIPT_DIR/sign_app.sh" "$STAGING_DIR/Keytide.app"
 
 # A UI-only release must retain the vendored Helper identity after packaging.
-EXPECTED_HASH="$(tr -d '[:space:]' < vendor/KeyStatsHelper.cdhash.txt)"
-ACTUAL_HASH="$(codesign -d -vvv "$STAGING_DIR/Keytide.app/Contents/Resources/KeyStatsHelper.app" 2>&1 | awk -F= '/^CDHash=/ {print $2}')"
+EXPECTED_HASH="$(tr -d '[:space:]' < vendor/KeytideHelper.cdhash.txt)"
+ACTUAL_HASH="$(codesign -d -vvv "$STAGING_DIR/Keytide.app/Contents/Resources/KeytideHelper.app" 2>&1 | awk -F= '/^CDHash=/ {print $2}')"
 if [[ -z "$ACTUAL_HASH" || "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
     echo "Packaged Helper cdhash differs from vendor; stop for signature/permission review." >&2
     exit 1

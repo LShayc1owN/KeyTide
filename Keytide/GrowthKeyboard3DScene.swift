@@ -1,6 +1,7 @@
 import Cocoa
 import SceneKit
 import Metal
+import MetalKit
 
 struct GrowthKeyboard3DVisualState {
     let progress: Double
@@ -22,7 +23,15 @@ final class GrowthKeyboard3DScene {
     let maximumHeight: CGFloat
     private let scene = SCNScene()
     private let renderer = SCNRenderer(device: MTLCreateSystemDefaultDevice(), options: nil)
+    private lazy var liveRenderer: SCNRenderer = {
+        let value = SCNRenderer(device: renderer.device, options: nil)
+        value.scene = scene; value.pointOfView = renderer.pointOfView
+        value.isPlaying = false; value.autoenablesDefaultLighting = false
+        return value
+    }()
     private var caps: [String: SCNNode] = [:]
+    private var capColors: [String: NSColor] = [:]
+    private var tintedKeys: Set<String> = []
     private let groundMaterial = SCNMaterial()
     private var floor: SCNNode?
     private(set) var canvasColor = NSColor(srgbRed: 242/255, green: 242/255, blue: 238/255, alpha: 1)
@@ -124,13 +133,12 @@ final class GrowthKeyboard3DScene {
     }
 
     /// One explicit snapshot per cache miss, only requested by the visible production view.
-    func render(values: [GrowthKeyboardKeyUsage], backgroundColor: NSColor) -> GrowthKeyboard3DFrame {
+    func prepareLive(values: [GrowthKeyboardKeyUsage], backgroundColor: NSColor) {
         let states = Dictionary(uniqueKeysWithValues: values.map {
             ($0.id, GrowthKeyboard3DVisualState(progress: $0.progress,
                 height: GrowthKeyboard3DGeometry.height($0.progress),
                 bevel: GrowthKeyboard3DGeometry.bevel($0.progress), color: baseline.usageColor($0.progress)))
         })
-        let pixelScale: CGFloat = 2
         canvasColor = backgroundColor
         scene.background.contents = backgroundColor
         groundMaterial.diffuse.contents = backgroundColor
@@ -143,6 +151,7 @@ final class GrowthKeyboard3DScene {
             if shape.chamferRadius != state.bevel { shape.chamferRadius = state.bevel }
             node.position.y = CGFloat(0.075) + state.height / 2
             let color = state.color
+            capColors[key.id] = color
             let material = shape.firstMaterial!
             material.diffuse.contents = color; material.ambient.contents = color
             let p = state.progress
@@ -150,24 +159,74 @@ final class GrowthKeyboard3DScene {
             material.specular.contents = NSColor(white: 0.09 + 0.07 * p, alpha: 1)
         }
         SCNTransaction.commit()
+    }
+
+    func render(values: [GrowthKeyboardKeyUsage], backgroundColor: NSColor, pressOffsets: [String: CGFloat] = [:], pixelScale: CGFloat = 2) -> GrowthKeyboard3DFrame {
+        prepareLive(values: values, backgroundColor: backgroundColor)
+        applyLivePress(pressOffsets)
         let start = ProcessInfo.processInfo.systemUptime
         let image = renderer.snapshot(atTime: 0, with: CGSize(width: imageSize.width * pixelScale, height: imageSize.height * pixelScale),
                                       antialiasingMode: .multisampling4X)
         image.size = imageSize
         lastRenderMilliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1000
         renderCount += 1
+        return GrowthKeyboard3DFrame(image: image, rects: projectedRects(pixelScale: pixelScale))
+    }
+
+    private func projectedRects(pixelScale: CGFloat, projection: SCNRenderer? = nil) -> [String: CGRect] {
         var rects: [String: CGRect] = [:]
-        let width = baseline.boardSize.width / baseline.unit, length = baseline.boardSize.height / baseline.unit
         for key in baseline.keys {
-            let points = [CGPoint(x: key.rect.minX, y: key.rect.minY), CGPoint(x: key.rect.maxX, y: key.rect.minY),
-                          CGPoint(x: key.rect.maxX, y: key.rect.maxY), CGPoint(x: key.rect.minX, y: key.rect.maxY)].map { point in
-                let p = renderer.projectPoint(SCNVector3(point.x / baseline.unit - width / 2,
-                    CGFloat(0.075) + states[key.id]!.height, point.y / baseline.unit - length / 2))
+            let node = caps[key.id]!, shape = node.geometry as! SCNShape
+            let top = shape.path!.bounds.insetBy(dx: shape.chamferRadius + 0.025, dy: shape.chamferRadius + 0.025)
+            let points = [CGPoint(x: top.minX, y: top.minY), CGPoint(x: top.maxX, y: top.minY),
+                          CGPoint(x: top.maxX, y: top.maxY), CGPoint(x: top.minX, y: top.maxY)].map { point in
+                let p = (projection ?? renderer).projectPoint(node.convertPosition(
+                    SCNVector3(point.x, point.y, shape.extrusionDepth / 2), to: nil))
                 return CGPoint(x: p.x / pixelScale, y: imageSize.height - p.y / pixelScale)
             }
             rects[key.id] = points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }
         }
-        return GrowthKeyboard3DFrame(image: image, rects: rects)
+        return rects
+    }
+
+    // Early Growth caps can be thinner than the fixed-height Try typing model.
+    // Never push their entire mesh through the deck.
+    static func pressTravel(offset: CGFloat, height: CGFloat) -> CGFloat {
+        min(min(0.10, max(0, offset)), height * 0.55)
+    }
+    static func pressColor(_ color: NSColor, offset: CGFloat) -> NSColor {
+        let weight = min(1, max(0, offset) / 0.10)
+        guard weight > 0 else { return color }
+        return color.blended(withFraction: 0.18 * weight, of: .black) ?? color
+    }
+    var metalDevice: MTLDevice { renderer.device! }
+    func applyLivePress(_ offsets: [String: CGFloat]) {
+        SCNTransaction.begin(); SCNTransaction.disableActions = true
+        for (id, node) in caps {
+            let height = (node.geometry as! SCNShape).extrusionDepth
+            let offset = offsets[id] ?? 0
+            node.position.y = 0.075 + height / 2 - Self.pressTravel(offset: offset, height: height)
+            // The Mac camera is nearly overhead. Local contrast keeps even a
+            // thin cap's press readable without changing its resting material.
+            if (offset > 0 || tintedKeys.contains(id)), let color = capColors[id] {
+                let pressed = Self.pressColor(color, offset: offset)
+                node.geometry?.firstMaterial?.diffuse.contents = pressed
+                node.geometry?.firstMaterial?.ambient.contents = pressed
+            }
+        }
+        tintedKeys = Set(offsets.filter { $0.value > 0 }.keys)
+        SCNTransaction.commit()
+    }
+    func drawLive(in view: MTKView, queue: MTLCommandQueue, offsets: [String: CGFloat]) -> [String: CGRect] {
+        applyLivePress(offsets)
+        guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
+              let command = queue.makeCommandBuffer() else { return [:] }
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+        SCNTransaction.flush()
+        liveRenderer.render(atTime: 0, viewport: CGRect(origin: .zero, size: view.drawableSize), commandBuffer: command, passDescriptor: pass)
+        command.present(drawable); command.commit()
+        return projectedRects(pixelScale: view.drawableSize.width / imageSize.width, projection: liveRenderer)
     }
 
     /// Actual screen-space lift divided by one ordinary-key width; independent of viewport scale.

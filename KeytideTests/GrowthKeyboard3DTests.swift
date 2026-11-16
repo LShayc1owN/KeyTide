@@ -15,6 +15,106 @@ private final class StaticRenderScheduler {
 }
 
 final class GrowthKeyboard3DTests: XCTestCase {
+    func testViewportPreservesAnchorAndClampsZoomAndPan() {
+        var viewport = KeyboardViewportState()
+        let size = CGSize(width: 1000, height: 600), anchor = CGPoint(x: 300, y: 240)
+        viewport.zoom(by: 2, at: anchor, in: size)
+        let frame = viewport.frame(in: size)
+        XCTAssertEqual((anchor.x - frame.minX) / frame.width, 0.3, accuracy: 0.000_001)
+        XCTAssertEqual((anchor.y - frame.minY) / frame.height, 0.4, accuracy: 0.000_001)
+        viewport.pan(by: CGSize(width: 100000, height: -100000), in: size)
+        XCTAssertEqual(viewport.frame(in: size).minX, 0)
+        XCTAssertEqual(viewport.frame(in: size).maxY, size.height)
+        viewport.zoom(by: 100, at: anchor, in: size)
+        XCTAssertEqual(viewport.scale, 2.5)
+        viewport.zoom(by: 0.001, at: anchor, in: size)
+        XCTAssertEqual(viewport.scale, 0.75)
+        XCTAssertEqual(viewport.offset, .zero)
+        viewport.zoom(by: .nan, at: anchor, in: size)
+        XCTAssertEqual(viewport.scale, 0.75)
+        viewport.reset()
+        XCTAssertEqual(viewport.frame(in: size), CGRect(origin: .zero, size: size))
+    }
+
+    func testEveryLegendFitsTopWithoutOverlapsAndLettersStayCentered() {
+        let layout = layout()
+        for key in layout.keys {
+            for scale in [0.75, 1.0, 2.5] {
+                let top = CGRect(x: 20, y: 30, width: key.size.width * scale * 0.6,
+                    height: key.size.height * scale * 0.6)
+                let marks = KeyboardLegendLayout.marks(for: key, top: top)
+                if key.id != "Space" { XCTAssertFalse(marks.isEmpty, key.id) }
+                for (index, mark) in marks.enumerated() {
+                    XCTAssertTrue(top.insetBy(dx: -0.001, dy: -0.001).contains(mark.rect), key.id)
+                    // The approved centered legends use the full top surface;
+                    // the old 78% strip rule predates that layout change.
+                    if key.id.count == 1, key.id.first?.isLetter == true, marks.count == 1 {
+                        XCTAssertEqual(mark.rect.midX, top.midX, accuracy: 0.001, key.id)
+                        XCTAssertEqual(mark.rect.midY, top.midY, accuracy: 0.001, key.id)
+                    }
+                    for other in marks.dropFirst(index + 1) {
+                        XCTAssertFalse(mark.rect.intersects(other.rect), "Overlapping marks on \(key.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testMacTopProjectionFollowsPressWithoutChangingOtherKeys() throws {
+        let layout = layout(), scene = GrowthKeyboard3DScene(layout)
+        let values = layout.keys.map { GrowthKeyboardKeyUsage(id: $0.id, count: 300) }
+        let rest = scene.render(values: values, backgroundColor: .clear, pixelScale: 1)
+        let pressed = scene.render(values: values, backgroundColor: .clear, pressOffsets: ["S": 0.1], pixelScale: 1)
+        let release = scene.render(values: values, backgroundColor: .clear, pixelScale: 1)
+        let top = try XCTUnwrap(rest.rects["S"])
+        XCTAssertNotEqual(top, pressed.rects["S"])
+        XCTAssertEqual(top, release.rects["S"])
+        XCTAssertEqual(rest.rects["A"], pressed.rects["A"])
+        XCTAssertEqual(rest.rects.count, 77)
+    }
+
+    func testResolutionRefinementWaitsForReplayAndKeepsThreeFrameCache() {
+        let layout = layout(), scheduler = StaticRenderScheduler()
+        var finish: (() -> Void)?, cancellations = 0
+        var resolutions: [CGFloat] = []
+        let frame = fakeFrame(layout)
+        let view = GrowthKeyboard3DRenderer(layout: layout,
+            renderDetailedFrame: { _, _, scale in resolutions.append(scale); return frame },
+            replayPress: { _, _, _, completion in finish = completion; return { cancellations += 1 } },
+            reduceMotion: { false }, schedule: scheduler.schedule)
+        view.setActive(true)
+        let values = layout.keys.map { GrowthKeyboardKeyUsage(id: $0.id, count: 1) }
+        view.apply(values, animated: true, replayFrom: values,
+            recordedReplay: GrowthReplayPressPlan(day: KeyReplayExample.make().day))
+        scheduler.fireAll()
+        XCTAssertTrue(view.isReplayingPress)
+        view.setFrameSize(CGSize(width: 3200, height: 1500))
+        view.updateDisplayResolution()
+        XCTAssertEqual(cancellations, 0)
+        XCTAssertFalse(view.hasScheduledRender)
+        finish?()
+        scheduler.fireAll()
+        XCTAssertEqual(resolutions, [2, 5])
+        XCTAssertFalse(view.isReplayingPress)
+        XCTAssertLessThanOrEqual(view.cachedFrameCount, 3)
+    }
+
+    func testMacReplayPressIsStrongerAndThinCapsStayAboveDeck() throws {
+        XCTAssertEqual(GrowthKeyboard3DScene.pressTravel(offset: MechanicalPressProfile.light.travel, height: 0.30), 0.10, accuracy: 0.000_001)
+        for height in [GrowthKeyboard3DGeometry.minimumHeight, 0.03, 0.10, 0.30, GrowthKeyboard3DGeometry.maximumHeight] {
+            for offset in [-1.0, 0, 0.04, 0.10, 1] {
+                let travel = GrowthKeyboard3DScene.pressTravel(offset: CGFloat(offset), height: height)
+                XCTAssertGreaterThanOrEqual(travel, 0)
+                XCTAssertGreaterThanOrEqual(height - travel, height * 0.45 - 0.000_001)
+            }
+        }
+        let base = NSColor(srgbRed: 0.8, green: 0.85, blue: 0.9, alpha: 1)
+        let pressed = try XCTUnwrap(GrowthKeyboard3DScene.pressColor(base, offset: 0.10).usingColorSpace(.sRGB))
+        XCTAssertLessThan(pressed.redComponent, 0.72)
+        XCTAssertEqual(pressed.alphaComponent, 1, accuracy: 0.000_001)
+        XCTAssertEqual(GrowthKeyboard3DScene.pressColor(base, offset: 0), base, "Release restores the exact resting color")
+    }
+
     func testExportUsesPresentedFrameWithoutChangingSelectionOrRendering() throws {
         let layout = layout(), scheduler = StaticRenderScheduler()
         let view = GrowthKeyboard3DRenderer(layout: layout,
@@ -460,5 +560,117 @@ final class GrowthKeyboard3DTests: XCTestCase {
         XCTAssertEqual(received[1].first { $0.id == "LeftCmd" }?.count, 3)
         XCTAssertEqual(received[1].first { $0.id == "RightCmd" }?.count, 0)
         XCTAssertEqual(received[1].count, 77)
+    }
+}
+
+final class GrowthReplayPressTests: XCTestCase {
+    private func usage(_ a: Int, _ s: Int = 0) -> [GrowthKeyboardKeyUsage] {
+        [.init(id: "A", count: a), .init(id: "S", count: s)]
+    }
+    private func frame() -> GrowthKeyboard3DFrame {
+        let layout = EditorialKeyboardRenderer(frame: .zero).sceneLayout
+        return .init(image: NSImage(size: GrowthKeyboard3DScene.size),
+            rects: Dictionary(uniqueKeysWithValues: layout.keys.map { ($0.id, $0.rect) }))
+    }
+    private func plan() -> GrowthReplayPressPlan {
+        GrowthReplayPressPlan(day: KeyReplayDay(entries: [
+            .init(seconds: 0, event: .init(milliseconds: 0, ordinal: 0, keyCode: 0, phase: .down, growthKeys: ["A"]), startsSession: true),
+            .init(seconds: 0.1, event: .init(milliseconds: 100, ordinal: 1, keyCode: 0, phase: .up, growthKeys: []), startsSession: false)
+        ], hasUnreadableChunks: false))
+    }
+    func testNoRecordsNeverFabricatesASequence() {
+        XCTAssertTrue(GrowthReplayPressPlan(day: .empty).entries.isEmpty)
+        XCTAssertEqual(GrowthReplayPressPlan(day: .empty).duration(profile: .light), 0)
+    }
+    func testReplayRetainsPresentedCountsUntilPressFinishesEvenOnCacheHit() {
+        let scheduler = StaticRenderScheduler()
+        var finish: (() -> Void)?
+        var received: [String] = []
+        let renderer = GrowthKeyboard3DRenderer(layout: EditorialKeyboardRenderer(frame: .zero).sceneLayout,
+            renderFrame: { _,_ in self.frame() }, replayPress: { plan, _, _, done in
+                received = plan.ids; finish = done; return {}
+            }, reduceMotion: { false }, schedule: scheduler.schedule)
+        renderer.setActive(true)
+        renderer.apply(usage(2));scheduler.fireAll()
+        renderer.apply(usage(1));scheduler.fireAll() // Both endpoints in LRU.
+        var count = -1, acknowledgements = 0
+        renderer.onSelectionChanged = { count = $0?.count ?? -1 }
+        renderer.selectKey("A")
+        renderer.apply(usage(2), animated: true, replayFrom: usage(1), recordedReplay: plan()) { acknowledgements += 1 }
+        XCTAssertEqual(received, ["A"])
+        XCTAssertTrue(renderer.isReplayingPress)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(acknowledgements, 0)
+        finish?()
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertFalse(renderer.isReplayingPress)
+        XCTAssertEqual(renderer.renderCount, 2)
+    }
+    func testHiddenOrNewDateCancelsOldAnimationAndRejectsItsCompletion() {
+        let scheduler = StaticRenderScheduler()
+        var callbacks: [() -> Void] = []
+        var cancels = 0
+        let renderer = GrowthKeyboard3DRenderer(layout: EditorialKeyboardRenderer(frame: .zero).sceneLayout,
+            renderFrame: { _,_ in self.frame() }, replayPress: { _,_,_,done in
+                callbacks.append(done); return { cancels += 1 }
+            }, reduceMotion: { false }, schedule: scheduler.schedule)
+        renderer.setActive(true);renderer.apply(usage(1));scheduler.fireAll()
+        var acknowledged = 0
+        renderer.apply(usage(2), animated: true, replayFrom: usage(1), recordedReplay: plan()) { acknowledged += 1 }
+        scheduler.fireAll()
+        renderer.setActive(false)
+        XCTAssertEqual(cancels, 1)
+        callbacks[0]()
+        XCTAssertEqual(acknowledged, 0)
+        XCTAssertFalse(renderer.isReplayingPress)
+        renderer.setActive(true) // Complete the pending full frame without replaying the press.
+        XCTAssertEqual(acknowledged, 1)
+        renderer.apply(usage(3), animated: true, replayFrom: usage(2), recordedReplay: plan())
+        scheduler.fireAll()
+        renderer.apply(usage(9)) { acknowledged += 10 }
+        scheduler.fireAll()
+        callbacks[1]()
+        XCTAssertEqual(acknowledged, 11)
+        XCTAssertEqual(cancels, 2)
+    }
+    func testReducedMotionAndZeroDeltaSkipPressAndStillAcknowledge() {
+        let scheduler = StaticRenderScheduler()
+        let renderer = GrowthKeyboard3DRenderer(layout: EditorialKeyboardRenderer(frame: .zero).sceneLayout,
+            renderFrame: { _,_ in self.frame() }, replayPress: { _,_,_,_ in
+                XCTFail("Reduced Motion must not start a press renderer"); return {}
+            }, reduceMotion: { true }, schedule: scheduler.schedule)
+        renderer.setActive(true);renderer.apply(usage(1));scheduler.fireAll()
+        var acknowledged = 0
+        renderer.apply(usage(2), animated: true, replayFrom: usage(1), recordedReplay: plan()) { acknowledged += 1 }
+        scheduler.fireAll()
+        renderer.apply(usage(2), animated: true, replayFrom: usage(2), recordedReplay: plan()) { acknowledged += 1 }
+        XCTAssertEqual(acknowledged, 2)
+        XCTAssertFalse(renderer.isReplayingPress)
+        XCTAssertNil(renderer.layer?.animation(forKey: kCATransition))
+    }
+    func testPlaybackDriverWaitsForPressCompletionBeforeSchedulingNextDay() {
+        let renders = StaticRenderScheduler()
+        var steps: [() -> Void] = [], finish: (() -> Void)?
+        let driver = GrowthPlaybackDriver(schedule: { _, action in steps.append(action); return {} })
+        driver.waitsForPresentation = true
+        let renderer = GrowthKeyboard3DRenderer(layout: EditorialKeyboardRenderer(frame: .zero).sceneLayout,
+            renderFrame: { _,_ in self.frame() }, replayPress: { _,_,_, done in finish = done; return {} },
+            reduceMotion: { false }, schedule: renders.schedule)
+        renderer.setActive(true)
+        driver.onChange = { offset in
+            let generation = driver.presentationGeneration
+            renderer.apply(self.usage(offset + 1), animated: driver.isPresentingPlaybackFrame,
+                replayFrom: offset > 0 ? self.usage(offset) : nil, recordedReplay: self.plan()) {
+                driver.framePresented(at: offset, generation: generation)
+            }
+        }
+        driver.reset(dayCount: 3);driver.setActive(true);driver.start();renders.fireAll()
+        XCTAssertEqual(steps.count, 1)
+        steps.removeFirst()();renders.fireAll()
+        XCTAssertTrue(renderer.isReplayingPress)
+        XCTAssertTrue(steps.isEmpty)
+        finish?()
+        XCTAssertEqual(steps.count, 1)
     }
 }

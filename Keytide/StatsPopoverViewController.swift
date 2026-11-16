@@ -111,6 +111,7 @@ class StatsPopoverViewController: NSViewController {
                 self?.updateAppearance()
             }
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(monitoringStatusChanged), name: MonitoringStatus.didChange, object: nil)
         HelperXPCClient.shared.addStateObserver { [weak self] _ in
             DispatchQueue.main.async {
                 self?.updatePermissionButtonVisibility()
@@ -851,12 +852,18 @@ class StatsPopoverViewController: NSViewController {
         updateHistorySection(animated: true, slideDirection: direction)
     }
 
+    @objc private func monitoringStatusChanged() {
+        guard isViewLoaded, permissionButton != nil else { return }
+        updatePermissionButtonVisibility()
+    }
+
     private func updatePermissionButtonVisibility() {
-        if case .connected(_, let granted) = HelperXPCClient.shared.state {
-            permissionButton.isHidden = granted
-        } else {
-            permissionButton.isHidden = false
-        }
+        let status = MonitoringStatus.shared
+        permissionButton.isHidden = status.state == .monitoring
+        permissionButton.isEnabled = status.state != .starting
+        permissionButton.title = NSLocalizedString(status.failureDescription == nil ? "button.permission" : "monitoring.retry", comment: "")
+        permissionButton.toolTip = status.failureDescription
+        permissionButton.setAccessibilityHelp(status.failureDescription)
     }
 
     private func focusPrimaryControl() {
@@ -954,7 +961,11 @@ class StatsPopoverViewController: NSViewController {
     }
 
     @objc private func requestPermission() {
-        AppDelegate.shared?.requestAccessibilityPermission(analyticsSource: "popover_button")
+        if MonitoringStatus.shared.failureDescription != nil {
+            AppDelegate.shared?.retryMonitoring()
+        } else {
+            AppDelegate.shared?.requestAccessibilityPermission(analyticsSource: "popover_button")
+        }
         updatePermissionButtonVisibility()
     }
 
@@ -1049,6 +1060,7 @@ final class AnimatedStatValueViewModel: ObservableObject {
 }
 
 struct AnimatedStatValueView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: AnimatedStatValueViewModel
     var prominent = false
     var compact = false
@@ -1072,7 +1084,7 @@ struct AnimatedStatValueView: View {
         }
         .lineLimit(1)
         .minimumScaleFactor(compact ? 1 : (prominent ? 0.65 : 0.85))
-        .animation(.default, value: viewModel.text)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: viewModel.text)
     }
 }
 
@@ -1085,6 +1097,7 @@ final class AnimatedKeyCountViewModel: ObservableObject {
 }
 
 struct AnimatedKeyCountView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: AnimatedKeyCountViewModel
 
     var body: some View {
@@ -1104,7 +1117,7 @@ struct AnimatedKeyCountView: View {
         }
         .lineLimit(1)
         .minimumScaleFactor(0.75)
-        .animation(.default, value: viewModel.text)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: viewModel.text)
     }
 }
 
@@ -2189,20 +2202,18 @@ class StatsChartView: NSView {
 
     private func addSlideTransition(direction: SlideDirection) {
         guard let layer = layer else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            layer.removeAnimation(forKey: "contentSlide")
+            layer.removeAnimation(forKey: kCATransition)
+            layer.removeAnimation(forKey: "contentScale")
+            return
+        }
         let timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 0.2, 1.0)
         let transition = CATransition()
-        transition.type = .push
-        transition.subtype = direction == .right ? .fromRight : .fromLeft
-        transition.duration = transitionDuration
+        transition.type = .fade
+        transition.duration = min(transitionDuration, 0.2)
         transition.timingFunction = timingFunction
         layer.add(transition, forKey: "contentSlide")
-
-        let scaleAnimation = CABasicAnimation(keyPath: "transform")
-        scaleAnimation.fromValue = CATransform3DMakeScale(0.98, 0.98, 1)
-        scaleAnimation.toValue = CATransform3DIdentity
-        scaleAnimation.duration = transitionDuration
-        scaleAnimation.timingFunction = timingFunction
-        layer.add(scaleAnimation, forKey: "contentScale")
     }
 }
 

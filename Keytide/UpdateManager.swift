@@ -22,7 +22,7 @@ final class UpdateManager: NSObject {
                                           updatesEnabled: true)
     }
     var usesManualReleasePage: Bool {
-        !hasConfiguredSigningKey || Bundle.main.object(forInfoDictionaryKey: "KeyStatsInAppUpdatesEnabled") as? Bool != true
+        !hasConfiguredSigningKey || Bundle.main.object(forInfoDictionaryKey: "KeytideInAppUpdatesEnabled") as? Bool != true
     }
     private var allowsSparkle: Bool {
         AppLaunchMode.current == .normal && !usesManualReleasePage

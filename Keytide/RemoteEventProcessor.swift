@@ -4,7 +4,7 @@ import CoreGraphics
 import Carbon
 
 /// 把 helper 送来的 payload 翻译回 StatsManager 能吃的调用。
-final class RemoteEventProcessor: NSObject, KeyStatsEventSinkProtocol {
+final class RemoteEventProcessor: NSObject, KeytideEventSinkProtocol {
     static let shared = RemoteEventProcessor()
 
     private let decoder = InputEventDecoder.shared
@@ -62,6 +62,10 @@ final class RemoteEventProcessor: NSObject, KeyStatsEventSinkProtocol {
 
             let name = decoder.keyName(keyCode: keyCode, keyboardType: keyboardType, flagsRaw: flagsRaw)
             stats.incrementKeyPresses(keyName: name, appIdentity: appIdentity(forPID: pid))
+            recordReplay(payload, growthName: name)
+
+        case .keyUp:
+            recordReplay(payload)
 
         case .flagsChanged:
             guard let keyCode = (payload[HelperPayloadFields.keyCode] as? NSNumber)?.intValue,
@@ -70,6 +74,7 @@ final class RemoteEventProcessor: NSObject, KeyStatsEventSinkProtocol {
 
             if keyCode == 57 {  // CapsLock
                 stats.incrementKeyPresses(keyName: "CapsLock", appIdentity: appIdentity(forPID: pid))
+                recordReplay(payload, growthName: "CapsLock")
                 return
             }
 
@@ -79,6 +84,7 @@ final class RemoteEventProcessor: NSObject, KeyStatsEventSinkProtocol {
             if let modifierName {
                 stats.incrementKeyPresses(keyName: modifierName, appIdentity: appIdentity(forPID: pid))
             }
+            recordReplay(payload, growthName: modifierName)
 
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             let role = payload[HelperPayloadFields.buttonRole] as? String
@@ -132,6 +138,18 @@ final class RemoteEventProcessor: NSObject, KeyStatsEventSinkProtocol {
     private func appIdentity(forPID pid: pid_t) -> AppIdentity? {
         guard StatsManager.shared.appStatsEnabled else { return nil }
         return AppActivityTracker.shared.appIdentity(forPID: pid)
+    }
+
+    private func recordReplay(_ payload: [String: Any], growthName: String? = nil) {
+        guard let timestamp = (payload[HelperPayloadFields.replayTimestamp] as? NSNumber)?.uint64Value,
+              let code = (payload[HelperPayloadFields.keyCode] as? NSNumber)?.uint16Value,
+              let raw = payload[HelperPayloadFields.replayPhase] as? String,
+              let phase = KeyReplayEvent.Phase(rawValue: raw) else {
+            KeyReplayRecording.shared.captureInterrupted()
+            return
+        }
+        let keys = growthName.map { Array(PhysicalKeyMapping.map([$0: 1]).counts.keys).sorted() } ?? []
+        KeyReplayRecording.shared.receive(nanoseconds: timestamp, keyCode: code, phase: phase, growthKeys: keys)
     }
 
     private func handleScrollSession(

@@ -1,7 +1,7 @@
 import AppKit
 import IOKit.hidsystem
 import XCTest
-@testable import KeyStatsHelper
+@testable import KeytideHelper
 
 /// Synthetic payload checks only: no event tap, XPC connection, or service start.
 final class HelperContractTests: XCTestCase {
@@ -26,6 +26,22 @@ final class HelperContractTests: XCTestCase {
         XCTAssertEqual((payload[HelperPayloadFields.keyCode] as? NSNumber)?.intValue, 0)
         XCTAssertEqual((payload[HelperPayloadFields.flags] as? NSNumber)?.uint64Value, event.flags.rawValue)
         XCTAssertTrue(payload.values.allSatisfy { $0 is NSNumber })
+    }
+
+    func testReplayMetadataIsOptInAndUsesSourceTimestamp() throws {
+        let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+        event.timestamp = 123_456_789
+        let off = try XCTUnwrap(PayloadBuilder.build(from: event, type: .keyDown))
+        XCTAssertNil(off[HelperPayloadFields.replayTimestamp])
+        XCTAssertNil(PayloadBuilder.build(from: event, type: .keyUp))
+        let down = try XCTUnwrap(PayloadBuilder.build(from: event, type: .keyDown, recordsReplay: true))
+        XCTAssertEqual((down[HelperPayloadFields.replayTimestamp] as? NSNumber)?.uint64Value, 123_456_789)
+        XCTAssertEqual(down[HelperPayloadFields.replayPhase] as? String, "down")
+        let up = try XCTUnwrap(PayloadBuilder.build(from: event, type: .keyUp, recordsReplay: true))
+        XCTAssertEqual(up[HelperPayloadFields.replayPhase] as? String, "up")
+        XCTAssertEqual(Set(up.keys), baseFields.union([HelperPayloadFields.keyCode,
+            HelperPayloadFields.keyboardType, HelperPayloadFields.flags, HelperPayloadFields.isAutoRepeat,
+            HelperPayloadFields.replayTimestamp, HelperPayloadFields.replayPhase]))
     }
 
     func testModifierPayloadRetainsTheKeyboardWireShape() throws {
@@ -100,12 +116,12 @@ final class HelperContractTests: XCTestCase {
     }
 
     func testPackageKeepsTheExistingServiceIdentityAndXPCInterfaces() {
-        XCTAssertEqual(HelperLocations.interfaceVersion, 1)
-        XCTAssertEqual(HelperLocations.mainBundleId, "com.xuanlprk.KeyStatsMac")
-        XCTAssertEqual(HelperLocations.helperBundleId, "com.xuanlprk.KeyStatsMac.helper")
+        XCTAssertEqual(HelperLocations.interfaceVersion, 2)
+        XCTAssertEqual(HelperLocations.mainBundleId, "com.xuanlprk.KeyTide")
+        XCTAssertEqual(HelperLocations.helperBundleId, "com.xuanlprk.KeyTide.helper")
         XCTAssertEqual(HelperLocations.machServiceName, HelperLocations.helperBundleId)
         XCTAssertEqual(HelperLocations.launchAgentLabel, HelperLocations.helperBundleId)
-        XCTAssertNotNil(NSXPCInterface(with: KeyStatsHelperProtocol.self))
-        XCTAssertNotNil(NSXPCInterface(with: KeyStatsEventSinkProtocol.self))
+        XCTAssertNotNil(NSXPCInterface(with: KeytideHelperProtocol.self))
+        XCTAssertNotNil(NSXPCInterface(with: KeytideEventSinkProtocol.self))
     }
 }

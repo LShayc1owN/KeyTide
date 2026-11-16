@@ -1,6 +1,6 @@
 #!/bin/bash
-# Verify vendor/KeyStatsHelper.app's actual cdhash matches the value
-# recorded in vendor/KeyStatsHelper.cdhash.txt.
+# Verify vendor/KeytideHelper.app's actual cdhash matches the value
+# recorded in vendor/KeytideHelper.cdhash.txt.
 #
 # Run from CI and from local build_dmg.sh to detect a stale or
 # corrupted vendored helper before any further build work.
@@ -11,8 +11,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-VENDOR_APP="$PROJECT_DIR/vendor/KeyStatsHelper.app"
-EXPECTED_FILE="$PROJECT_DIR/vendor/KeyStatsHelper.cdhash.txt"
+VENDOR_APP="$PROJECT_DIR/vendor/KeytideHelper.app"
+EXPECTED_FILE="$PROJECT_DIR/vendor/KeytideHelper.cdhash.txt"
 
 if [ ! -d "$VENDOR_APP" ]; then
     echo "❌ Missing vendored helper bundle: $VENDOR_APP"
@@ -36,13 +36,13 @@ fi
 
 if [ "$EXPECTED" != "$ACTUAL" ]; then
     echo "❌ Vendored helper cdhash mismatch."
-    echo "   Expected (vendor/KeyStatsHelper.cdhash.txt): $EXPECTED"
-    echo "   Actual   (vendor/KeyStatsHelper.app):        $ACTUAL"
+    echo "   Expected (vendor/KeytideHelper.cdhash.txt): $EXPECTED"
+    echo "   Actual   (vendor/KeytideHelper.app):        $ACTUAL"
     echo ""
     echo "   The vendored bundle was modified without updating cdhash.txt,"
     echo "   or the helper sources changed without re-vendoring. Run:"
     echo "     ./scripts/rebuild_vendored_helper.sh"
-    echo "   then commit both vendor/KeyStatsHelper.app and vendor/KeyStatsHelper.cdhash.txt."
+    echo "   then commit both vendor/KeytideHelper.app and vendor/KeytideHelper.cdhash.txt."
     exit 1
 fi
 

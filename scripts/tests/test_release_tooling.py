@@ -23,7 +23,7 @@ if name == 'xcodebuild':
     if os.environ.get('FAIL_BUILD') == '1':
         sys.exit(42)
     app = Path(args[args.index('-archivePath') + 1]) / 'Products/Applications/Keytide.app'
-    (app / 'Contents/Resources/KeyStatsHelper.app').mkdir(parents=True)
+    (app / 'Contents/Resources/KeytideHelper.app').mkdir(parents=True)
     (app / 'Contents/payload').write_text('same signed app')
 elif name == 'ditto':
     if '-c' in args:
@@ -59,7 +59,7 @@ class ReleaseToolingTests(unittest.TestCase):
         (self.root / 'Keytide').mkdir()
         self.write_info(False)
         (self.root / 'vendor').mkdir()
-        (self.root / 'vendor/KeyStatsHelper.cdhash.txt').write_text('fixture-hash\n')
+        (self.root / 'vendor/KeytideHelper.cdhash.txt').write_text('fixture-hash\n')
         (self.root / 'bin').mkdir()
         for tool in ('xcodebuild', 'ditto', 'codesign', 'hdiutil', 'git'):
             p = self.root / 'bin' / tool
@@ -72,7 +72,7 @@ class ReleaseToolingTests(unittest.TestCase):
 
     def write_info(self, enabled):
         with (self.root / 'Keytide/Info.plist').open('wb') as f:
-            plistlib.dump({'KeyStatsInAppUpdatesEnabled': enabled, 'SUEnableAutomaticChecks': False}, f)
+            plistlib.dump({'KeytideInAppUpdatesEnabled': enabled, 'SUEnableAutomaticChecks': False}, f)
 
     def run_script(self, script, *args, **env):
         return subprocess.run(['bash', str(self.root / 'scripts' / script), *args],

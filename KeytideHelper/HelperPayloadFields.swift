@@ -18,6 +18,8 @@ enum HelperPayloadFields {
     static let scrollIsContinuous = "scrollIsContinuous"
     static let sourcePID = "sourcePID"
     static let monotonicTime = "monotonicTime"
+    static let replayTimestamp = "replayTimestampNanoseconds"
+    static let replayPhase = "replayPhase"
 }
 
 enum ButtonRole {

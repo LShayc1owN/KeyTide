@@ -6,6 +6,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.delegate as? AppDelegate
     }
 
+    private var onboardingProgress: OnboardingProgress!
+    private var onboardingWindow: OnboardingWindowController?
+    private var isTerminating = false
+    private var installationInProgress = false
     private var menuBarController: MenuBarController?
     private var permissionCheckTimer: Timer?
     private var permissionCheckCount = 0
@@ -21,10 +25,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        ApplicationIdentityMigration.migrate(defaults: .standard)
         // 必须在 trackInstallIfNeeded()/MenuBarController 任何 UserDefaults 写入之前采集，
         // 否则 fresh install 与升级用户在后续阶段已无差别。仅作为是否触发迁移提示的判据。
         let wasPreviouslyInstalled = UserDefaults.standard.bool(forKey: analyticsInstallTrackedKey)
 
+        onboardingProgress = OnboardingProgress(defaults: .standard)
         AnalyticsManager.shared.setupIfEnabled()
         trackInstallIfNeeded()
         Self.trackEvent("app_open")
@@ -38,8 +44,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupApplicationMenu()
         setupWindowMenu()
+        if AppLaunchMode.current == .normal { KeyReplayRecording.shared.startObserving(); TrackpadRecording.shared.startObserving() }
 
-        bootstrapHelperPipeline(wasPreviouslyInstalled: wasPreviouslyInstalled)
+        HelperXPCClient.shared.addStateObserver { [weak self] state in
+            if case .disconnected = state {
+                DispatchQueue.main.async {
+                    guard let self, !self.isTerminating, !self.installationInProgress else { return }
+                    MonitoringStatus.shared.connectionLost()
+                }
+            }
+        }
+        if AppLaunchMode.current == .normal, onboardingProgress.shouldPresentAutomatically {
+            showOnboarding()
+        } else {
+            bootstrapHelperPipeline(wasPreviouslyInstalled: wasPreviouslyInstalled)
+        }
         #if DEBUG
         if AppLaunchMode.current == .guiAcceptance,
            ProcessInfo.processInfo.arguments.contains("--debug-open-keyboard") {
@@ -53,6 +72,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
+        TrackpadRecording.shared.finish()
+        isTerminating = true
+        KeyReplayRecording.shared.shutdown()
+        MonitoringStatus.shared.invalidate()
         Self.trackEvent("app_exit")
         HelperXPCClient.shared.stopMonitoring()
         HelperXPCClient.shared.disconnect()
@@ -66,33 +89,89 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Helper 启动
 
+    private var suppressesLegacySetupPrompts: Bool {
+        onboardingProgress?.usesWelcomeExperience == true || onboardingWindow?.window?.isVisible == true
+    }
+
+    func showOnboarding(restart: Bool = false) {
+        guard AppLaunchMode.current == .normal else { return }
+        if onboardingProgress == nil { onboardingProgress = OnboardingProgress(defaults: .standard) }
+        if onboardingWindow == nil {
+            let controller = OnboardingWindowController(progress: onboardingProgress)
+            controller.onPrepare = { [weak self] in
+                guard MonitoringStatus.shared.state != .monitoring else { return }
+                self?.bootstrapHelperPipeline(wasPreviouslyInstalled: false)
+            }
+            controller.onRecheck = { [weak self] in
+                guard let self, !self.installationInProgress, !self.isTerminating,
+                      MonitoringStatus.shared.state != .monitoring,
+                      MonitoringStatus.shared.state != .starting else { return }
+                if case .installationFailed = MonitoringStatus.shared.state { return }
+                HelperXPCClient.shared.refreshState { [weak self] state in
+                    DispatchQueue.main.async {
+                        guard let self, !self.isTerminating else { return }
+                        if case .connected(_, true) = state { self.startMonitoringWithFeedback() }
+                    }
+                }
+            }
+            controller.onAuthorize = { [weak self] in self?.requestAccessibilityPermission(analyticsSource: "welcome") }
+            controller.onRetry = { [weak self] in self?.retryMonitoring() }
+            controller.onOpenStats = { [weak self] in self?.menuBarController?.showStatistics() }
+            controller.onOpenKeyboard = { KeyboardHeatmapWindowController.shared.show() }
+            controller.onOpenExample = { KeyboardHeatmapWindowController.shared.showExample() }
+            controller.setLogin = { try LaunchAtLoginManager.shared.setEnabled($0) }
+            controller.loginEnabled = { LaunchAtLoginManager.shared.isEnabled }
+            controller.onClose = { [weak self] in
+                self?.permissionCheckTimer?.invalidate()
+                self?.permissionCheckTimer = nil
+            }
+            onboardingWindow = controller
+        }
+        onboardingWindow?.show(restart: restart)
+    }
+
     private func bootstrapHelperPipeline(wasPreviouslyInstalled: Bool) {
+        guard !isTerminating, !installationInProgress else { return }
         HelperXPCClient.shared.setEventSink(RemoteEventProcessor.shared)
         if AppLaunchMode.current == .guiAcceptance {
             NSLog("[GUI Acceptance] Using installed Helper only; installation, LaunchAgent management and permission migration are disabled")
             connectHelperAndStart()
             return
         }
+        installationInProgress = true
+        MonitoringStatus.shared.begin()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 try HelperSupervisor.shared.ensureInstalled()
                 NSLog("[AppDelegate] helper installed + launchd registered")
             } catch {
                 NSLog("[AppDelegate] HelperSupervisor.ensureInstalled failed: \(error)")
+                DispatchQueue.main.async {
+                    guard let self, !self.isTerminating else { return }
+                    self.installationInProgress = false
+                    MonitoringStatus.shared.installationFailed(error.localizedDescription)
+                }
+                return
             }
             DispatchQueue.main.async {
+                guard let self, !self.isTerminating else { return }
+                self.installationInProgress = false
+                MonitoringStatus.shared.invalidate()
                 Task { @MainActor in
-                    HelperMigrationPresenter.shared.showIfNeeded(wasPreviouslyInstalled: wasPreviouslyInstalled)
-                    self?.connectHelperAndStart()
+                    if !self.suppressesLegacySetupPrompts {
+                        HelperMigrationPresenter.shared.showIfNeeded(wasPreviouslyInstalled: wasPreviouslyInstalled)
+                    }
+                    self.connectHelperAndStart()
                 }
             }
         }
     }
 
     private func connectHelperAndStart() {
+        guard !isTerminating else { return }
         HelperXPCClient.shared.connect { [weak self] state in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, !self.isTerminating else { return }
                 NSLog("[AppDelegate] helper xpc state = \(state)")
                 switch state {
                 case .connected(let version, let granted):
@@ -102,21 +181,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         return
                     }
                     if granted {
-                        HelperXPCClient.shared.startMonitoring { ok, code in
-                            NSLog("[AppDelegate] helper startMonitoring ok=\(ok) code=\(code)")
-                        }
-                        self.promptLaunchAtLoginIfNeeded()
+                        self.startMonitoringWithFeedback()
                     } else {
+                        MonitoringStatus.shared.invalidate()
                         guard AppLaunchMode.current == .normal else {
                             NSLog("[GUI Acceptance] Installed Helper lacks Accessibility permission; GUI remains available without monitoring or permission changes")
                             return
                         }
-                        if self.shouldShowAccessibilityPromptOnLaunch {
+                        if self.shouldShowAccessibilityPromptOnLaunch && !self.suppressesLegacySetupPrompts {
                             self.showPermissionAlert()
                         } else {
                             print("开发模式启动：helper 未获辅助功能授权，跳过启动提示")
                         }
-                        self.startPermissionPolling()
+                        if !self.suppressesLegacySetupPrompts { self.startPermissionPolling() }
                     }
                 case .disconnected(let reason):
                     guard AppLaunchMode.current == .normal else {
@@ -131,6 +208,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     break
                 }
             }
+        }
+    }
+
+    private func startMonitoringWithFeedback() {
+        guard !isTerminating else { return }
+        let token = MonitoringStatus.shared.begin()
+        HelperXPCClient.shared.startMonitoring { [weak self] ok, code in
+            DispatchQueue.main.async {
+                guard let self, !self.isTerminating else { return }
+                if MonitoringStatus.shared.finish(token: token, ok: ok, code: code) {
+                    self.promptLaunchAtLoginIfNeeded()
+                }
+            }
+        }
+    }
+
+    func retryMonitoring() {
+        guard AppLaunchMode.current == .normal, !isTerminating else { return }
+        switch MonitoringStatus.shared.state {
+        case .installationFailed:
+            bootstrapHelperPipeline(wasPreviouslyInstalled: false)
+        case .starting: return
+        case .failed(code: 1):
+            HelperXPCClient.shared.refreshState { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.requestAccessibilityPermission(analyticsSource: "monitoring_retry")
+                }
+            }
+        default:
+            if isHelperAccessibilityGranted() { startMonitoringWithFeedback() }
+            else { requestAccessibilityPermission(analyticsSource: "monitoring_retry") }
         }
     }
 
@@ -200,10 +308,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleAccessibilityPermissionGranted() {
         permissionCheckTimer?.invalidate()
         permissionCheckTimer = nil
-        HelperXPCClient.shared.startMonitoring { ok, code in
-            NSLog("[AppDelegate] helper startMonitoring after grant ok=\(ok) code=\(code)")
-        }
-        promptLaunchAtLoginIfNeeded()
+        startMonitoringWithFeedback()
     }
 
     private func startPermissionPolling() {
@@ -233,7 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if self.permissionCheckCount >= self.maxPermissionChecks {
                 timer.invalidate()
                 self.permissionCheckTimer = nil
-                print("权限检查超时（5分钟），请手动在系统设置中授予 KeyStatsHelper 辅助功能权限")
+                print("权限检查超时（5分钟），请手动在系统设置中授予 KeytideHelper 辅助功能权限")
             }
         }
 
@@ -243,7 +348,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func promptLaunchAtLoginIfNeeded() {
-        guard AppLaunchMode.current == .normal else { return }
+        guard AppLaunchMode.current == .normal, !suppressesLegacySetupPrompts else { return }
         guard isHelperAccessibilityGranted() else { return }
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: launchAtLoginPromptedKey) else { return }

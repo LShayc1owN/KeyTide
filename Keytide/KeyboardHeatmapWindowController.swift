@@ -49,4 +49,9 @@ final class KeyboardHeatmapWindowController: NSWindowController {
             if !vc.showsGrowth { AppDelegate.trackPageView("keyboard_heatmap") }
         }
     }
+
+    func showExample() {
+        show()
+        (contentViewController as? KeyboardVisualizationViewController)?.showExample()
+    }
 }

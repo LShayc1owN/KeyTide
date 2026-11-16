@@ -8,6 +8,13 @@ final class MechanicalKeyboardScene {
     let baseline: EditorialKeyboardSceneLayout
     let scene = SCNScene()
     private let renderer = SCNRenderer(device:MTLCreateSystemDefaultDevice(),options:nil)
+    private var usesLiveProjection = false
+    private lazy var liveRenderer: SCNRenderer = {
+        let value = SCNRenderer(device: renderer.device, options: nil)
+        value.scene = scene; value.pointOfView = eye
+        value.isPlaying = false; value.autoenablesDefaultLighting = false
+        return value
+    }()
     private let eye = SCNNode()
     private var layoutNodes: [String:SCNNode] = [:]
     private let floorMaterial = SCNMaterial()
@@ -128,28 +135,47 @@ final class MechanicalKeyboardScene {
         }
     }
 
-    func renderGrowth(_ values: [GrowthKeyboardKeyUsage], background: NSColor) -> GrowthKeyboard3DFrame {
+    func renderGrowth(_ values: [GrowthKeyboardKeyUsage], background: NSColor, pressOffsets: [String: CGFloat] = [:], pixelScale: CGFloat = 3) -> GrowthKeyboard3DFrame {
+        usesLiveProjection = false
         applyGrowth(values)
+        applyFullPress(pressOffsets)
         scene.background.contents = background
         floorMaterial.diffuse.contents = background
-        let image = snapshot()
-        let legends = KeyboardLegendOverlay(model: self)
-        legends.pixelScale = 3
-        image.lockFocusFlipped(true)
-        legends.draw(CGRect(origin: .zero, size: Self.size))
-        image.unlockFocus()
+        let image = snapshot(pixelScale: pixelScale)
+        return GrowthKeyboard3DFrame(image: image, rects: growthRects(pixelScale: pixelScale))
+    }
+
+    private func growthRects(pixelScale: CGFloat, projection: SCNRenderer? = nil) -> [String: CGRect] {
         let rects = Dictionary(uniqueKeysWithValues: keys.map { key in
             let node = layoutNodes[key.id]!
-            let (low, high) = node.geometry!.boundingBox
-            let points = [low.x, high.x].flatMap { x in [low.y, high.y].flatMap { y in
-                [low.z, high.z].map { z -> CGPoint in
-                    let point = renderer.projectPoint(node.convertPosition(SCNVector3(x, y, z), to: nil))
-                    return CGPoint(x: point.x / 3, y: Self.size.height - point.y / 3)
-                }
-            } }
+            let points = topPoints(for: key).map { point -> CGPoint in
+                let p = (projection ?? renderer).projectPoint(node.convertPosition(point, to: nil))
+                return CGPoint(x: p.x / pixelScale, y: Self.size.height - p.y / pixelScale)
+            }
             return (key.id, points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) })
         })
-        return GrowthKeyboard3DFrame(image: image, rects: rects)
+        return rects
+    }
+
+    func prepareLive(values: [GrowthKeyboardKeyUsage], background: NSColor) {
+        applyGrowth(values)
+        setTransparentCanvas(background.alphaComponent == 0)
+        scene.background.contents = background
+        floorMaterial.diffuse.contents = background
+    }
+    func drawLive(in view: MTKView, queue: MTLCommandQueue, offsets: [String: CGFloat]) -> [String: CGRect] {
+        applyFullPress(offsets)
+        usesLiveProjection = true
+        guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
+              let command = queue.makeCommandBuffer() else { return [:] }
+        if transparentCanvas {
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+            pass.colorAttachments[0].loadAction = .clear
+        }
+        SCNTransaction.flush()
+        liveRenderer.render(atTime: 0, viewport: CGRect(origin: .zero, size: view.drawableSize), commandBuffer: command, passDescriptor: pass)
+        command.present(drawable); command.commit()
+        return growthRects(pixelScale: view.drawableSize.width / Self.size.width, projection: liveRenderer)
     }
 
     func setTransparentCanvas(_ transparent: Bool) {
@@ -173,7 +199,8 @@ final class MechanicalKeyboardScene {
             pass.colorAttachments[0].loadAction = .clear
         }
         SCNTransaction.flush()
-        renderer.render(atTime: 0, viewport: CGRect(origin: .zero, size: view.drawableSize), commandBuffer: command, passDescriptor: pass)
+        usesLiveProjection = true
+        liveRenderer.render(atTime: 0, viewport: CGRect(origin: .zero, size: view.drawableSize), commandBuffer: command, passDescriptor: pass)
         command.present(drawable); command.commit()
     }
     func applyFullPress(_ offsets: [String: CGFloat]) {
@@ -186,8 +213,9 @@ final class MechanicalKeyboardScene {
     }
     func fullKey(at point: CGPoint, pixelScale: CGFloat) -> String? {
         let x = point.x * pixelScale, y = (Self.size.height - point.y) * pixelScale
-        let near = renderer.unprojectPoint(SCNVector3(x, y, 0))
-        let far = renderer.unprojectPoint(SCNVector3(x, y, 1))
+        let projection = usesLiveProjection ? liveRenderer : renderer
+        let near = projection.unprojectPoint(SCNVector3(x, y, 0))
+        let far = projection.unprojectPoint(SCNVector3(x, y, 1))
         let hits = scene.rootNode.hitTestWithSegment(from: near, to: far,
             options: [SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
                 SCNHitTestOption.ignoreHiddenNodes.rawValue: true,
@@ -198,7 +226,7 @@ final class MechanicalKeyboardScene {
     func fullKeyCenter(_ id: String, pixelScale: CGFloat) -> CGPoint {
         let node = layoutNodes[id]!
         let crown: CGFloat = id == "Space" ? 0.022 : -0.060
-        let p = renderer.projectPoint(SCNVector3(node.position.x,
+        let p = (usesLiveProjection ? liveRenderer : renderer).projectPoint(SCNVector3(node.position.x,
             isMacModel ? node.position.y + Self.macHeight / 2 : node.position.y + (growthHeights[id] ?? Self.modelHeightMM / Self.millimetresPerUnit) + crown, node.position.z))
         return CGPoint(x: p.x / pixelScale, y: Self.size.height - p.y / pixelScale)
     }
@@ -217,21 +245,43 @@ final class MechanicalKeyboardScene {
             node.light?.castsShadow = castsShadows
         }
     }
-    func legendRect(for key: EditorialKeyboardSceneKey, pixelScale: CGFloat) -> CGRect {
-        let center = fullKeyCenter(key.id, pixelScale: pixelScale)
-        let inset: CGFloat = isMacModel ? 0.15 : 0.34
-        let usableWidth = key.size.width / baseline.unit - inset
-        let capDepth = key.size.height / baseline.unit
-        let depthInset = capDepth < 0.7 ? min(inset, capDepth * 0.30) : inset
-        let usableDepth = max(0.18, capDepth - depthInset)
-        let scale = Self.size.height / (2 * CGFloat(eye.camera!.orthographicScale))
-        let elevation: CGFloat = 72 * .pi / 180
-        let size = CGSize(width: usableWidth * scale, height: usableDepth * scale * sin(elevation))
-        return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+    func legendRect(for key: EditorialKeyboardSceneKey, pixelScale: CGFloat, snapshot: Bool = false) -> CGRect {
+        let node = layoutNodes[key.id]!
+        let projection = !snapshot && usesLiveProjection ? liveRenderer : renderer
+        return topPoints(for: key).reduce(CGRect.null) { rect, point in
+            let projected = projection.projectPoint(node.convertPosition(point, to: nil))
+            return rect.union(CGRect(origin: CGPoint(x: projected.x / pixelScale,
+                y: Self.size.height - projected.y / pixelScale), size: .zero))
+        }
     }
-    func snapshot() -> NSImage {
+    private func topPoints(for key: EditorialKeyboardSceneKey) -> [SCNVector3] {
+        let node = layoutNodes[key.id]!
+        if let shape = node.geometry as? SCNShape {
+            let top = shape.path!.bounds.insetBy(dx: shape.chamferRadius + 0.025, dy: shape.chamferRadius + 0.025)
+            return [CGPoint(x: top.minX, y: top.minY), CGPoint(x: top.maxX, y: top.minY),
+                    CGPoint(x: top.maxX, y: top.maxY), CGPoint(x: top.minX, y: top.maxY)]
+                .map { SCNVector3($0.x, $0.y, shape.extrusionDepth / 2) }
+        }
+        let clearance = 1 - Self.modelWidthMM / Self.millimetresPerUnit
+        let width = key.size.width / baseline.unit - clearance
+        let depth = key.size.height / baseline.unit - clearance
+        let topWidth = width - min(0.25, width * 0.25)
+        let topDepth = depth - min(0.25, depth * 0.25)
+        let height = growthHeights[key.id] ?? Self.modelHeightMM / Self.millimetresPerUnit
+        let dish = min(key.id == "Space" ? 0.022 : 0.060, height * 0.22)
+        let tilt = min(0.036, height * 0.10)
+        return [-1.0, 1.0].flatMap { horizontal in
+            [-1.0, 1.0].map { vertical in
+                let depthPosition = CGFloat(vertical) * max(0.02, topDepth / 2 - 0.045)
+                let crown = (key.id == "Space" ? dish : -dish) * (1 - pow(depthPosition / (topDepth / 2), 2))
+                return SCNVector3(CGFloat(horizontal) * max(0.02, topWidth / 2 - 0.045),
+                    height + tilt * depthPosition + crown, depthPosition)
+            }
+        }
+    }
+    func snapshot(pixelScale: CGFloat = 3) -> NSImage {
         SCNTransaction.flush()
-        let image = renderer.snapshot(atTime:0,with:CGSize(width:Self.size.width*3,height:Self.size.height*3),antialiasingMode:.multisampling4X)
+        let image = renderer.snapshot(atTime:0,with:CGSize(width:Self.size.width*pixelScale,height:Self.size.height*pixelScale),antialiasingMode:.multisampling4X)
         image.size = Self.size; return image
     }
     func configureMacModel() throws {

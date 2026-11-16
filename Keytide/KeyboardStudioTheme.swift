@@ -2,6 +2,85 @@ import Cocoa
 import QuartzCore
 import CoreGraphics
 
+final class KeyboardStudioViewport: NSView {
+    let canvas = NSView()
+    private(set) var state = KeyboardViewportState()
+    var onChange: (() -> Void)?
+    var onGestureEnd: (() -> Void)?
+    var onBackgroundClick: (() -> Void)?
+    private var pending: DispatchWorkItem?
+    private var gestureActive = false
+    private var suppressClicksUntil: TimeInterval = 0
+    private var previousSize = CGSize.zero
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        addSubview(canvas)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    deinit { pending?.cancel() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard hit != nil else { return nil }
+        return gestureActive || ProcessInfo.processInfo.systemUptime < suppressClicksUntil ? self : hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard !gestureActive, ProcessInfo.processInfo.systemUptime >= suppressClicksUntil else { return }
+        onBackgroundClick?()
+    }
+    override func magnify(with event: NSEvent) {
+        gestureActive = event.phase != .ended && event.phase != .cancelled
+        zoom(by: max(0.01, 1 + event.magnification), at: convert(event.locationInWindow, from: nil))
+    }
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas else { super.scrollWheel(with: event); return }
+        gestureActive = !event.phase.contains(.ended) && !event.phase.contains(.cancelled)
+            && !event.momentumPhase.contains(.ended)
+        pan(by: CGSize(width: event.scrollingDeltaX, height: -event.scrollingDeltaY))
+    }
+    func zoom(by factor: CGFloat, at point: CGPoint) {
+        state.zoom(by: factor, at: point, in: bounds.size)
+        updateCanvas(); finishLater()
+    }
+    func pan(by delta: CGSize) {
+        state.pan(by: delta, in: bounds.size)
+        updateCanvas(); finishLater()
+    }
+    override func layout() {
+        super.layout(); updateCanvas()
+        if previousSize != bounds.size {
+            previousSize = bounds.size
+            onGestureEnd?()
+        }
+    }
+    private func updateCanvas() {
+        state.constrain(in: bounds.size)
+        canvas.frame = state.frame(in: bounds.size)
+        canvas.bounds = CGRect(origin: .zero, size: canvas.frame.size)
+        canvas.layoutSubtreeIfNeeded()
+        onChange?()
+    }
+    private func finishLater() {
+        pending?.cancel()
+        suppressClicksUntil = ProcessInfo.processInfo.systemUptime + 0.15
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pending = nil; self.gestureActive = false
+            self.onGestureEnd?()
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+    func reset() {
+        cancelGestures(); state.reset(); updateCanvas(); onGestureEnd?()
+    }
+    func cancelGestures() {
+        pending?.cancel(); pending = nil; gestureActive = false; suppressClicksUntil = 0
+    }
+    override func viewDidHide() { super.viewDidHide(); cancelGestures() }
+}
+
 struct KeyboardStudioPalette {
     let background: NSColor
     let glow: NSColor
@@ -102,6 +181,7 @@ final class KeyboardKeyInsightCard: KeyboardStudioPanel {
     private let share = keyboardStudioLabel("", size: 19, weight: .medium)
     private let rank = keyboardStudioLabel("", size: 19, weight: .medium)
     private let close = NSButton()
+    private let mediaBreakdown = NSTextField(wrappingLabelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -116,7 +196,9 @@ final class KeyboardKeyInsightCard: KeyboardStudioPanel {
             keyboardStudioMetric("growth.key.share", share),
             keyboardStudioMetric("growth.key.position", rank)
         ], vertical: false, spacing: 24)
-        let content = keyboardStudioStack([heading, metrics], vertical: true, spacing: 12)
+        mediaBreakdown.font = .systemFont(ofSize: 11)
+        mediaBreakdown.isHidden = true
+        let content = keyboardStudioStack([heading, metrics, mediaBreakdown], vertical: true, spacing: 12)
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
         NSLayoutConstraint.activate([
@@ -124,6 +206,7 @@ final class KeyboardKeyInsightCard: KeyboardStudioPanel {
             content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             content.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            mediaBreakdown.widthAnchor.constraint(equalTo: content.widthAnchor),
             widthAnchor.constraint(equalToConstant: 310)
         ])
     }
@@ -131,6 +214,9 @@ final class KeyboardKeyInsightCard: KeyboardStudioPanel {
 
     func update(_ selection: GrowthKeyboardSidebarSelection, palette: KeyboardStudioPalette) {
         self.palette = palette
+        mediaBreakdown.stringValue = selection.mediaBreakdown ?? ""
+        mediaBreakdown.isHidden = selection.mediaBreakdown == nil
+        mediaBreakdown.textColor = palette.secondary
         key.stringValue = selection.name
         count.stringValue = selection.count
         share.stringValue = String(format: "%.1f%%", selection.share * 100)
@@ -144,7 +230,8 @@ final class KeyboardKeyInsightCard: KeyboardStudioPanel {
         setAccessibilityLabel(NSLocalizedString("growth.key.details", comment: ""))
         setAccessibilityValue(String(format: NSLocalizedString("growth.key.accessibility", comment: ""),
             selection.name, selection.countValue, selection.share * 100,
-            selection.rank ?? NSLocalizedString("growth.key.unranked", comment: "")))
+            selection.rank ?? NSLocalizedString("growth.key.unranked", comment: ""))
+            + (selection.mediaBreakdown.map { "; " + $0 } ?? ""))
     }
 
     @objc private func closeCard() { onClose?() }

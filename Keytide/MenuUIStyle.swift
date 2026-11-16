@@ -11,7 +11,7 @@ enum MenuUIStyle: String, CaseIterable {
 }
 
 extension Notification.Name {
-    static let menuUIStyleDidChange = Notification.Name("KeyStats.menuUIStyleDidChange")
+    static let menuUIStyleDidChange = Notification.Name("Keytide.menuUIStyleDidChange")
 }
 
 protocol MenuStatsPresenting: AnyObject {

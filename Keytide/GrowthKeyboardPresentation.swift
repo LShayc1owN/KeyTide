@@ -28,6 +28,7 @@ struct GrowthKeyboardSidebarSelection: Equatable {
     let count: String
     let share: Double
     let rank: String?
+    var mediaBreakdown: String? = nil
 }
 
 struct GrowthKeyboardFrame {
@@ -126,7 +127,7 @@ struct GrowthKeyboardPresentation {
         let snapshot = CumulativeKeyboardSnapshot(dayKey: lastKey, date: last,
             totalKeyPresses: total, keyPressCounts: counts, detailedKeyPresses: details)
         return GrowthKeyboardFrame(dayKey: lastKey, date: last, dayIndex: offset(for: last) + 1,
-            snapshot: snapshot, physical: PhysicalKeyMapping.map(counts), interval: interval)
+            snapshot: snapshot, physical: PhysicalKeyMapping.mapForDisplay(counts), interval: interval)
     }
 
     /// Calendar gaps reuse the latest snapshot, but display the requested date / Day N.
@@ -143,7 +144,7 @@ struct GrowthKeyboardPresentation {
         let snapshot = snapshots[lower - 1]
         return GrowthKeyboardFrame(dayKey: dayKey, date: date,
             dayIndex: period.dayIndex(for: dayKey)!, snapshot: snapshot,
-            physical: PhysicalKeyMapping.map(snapshot.keyPressCounts))
+            physical: PhysicalKeyMapping.mapForDisplay(snapshot.keyPressCounts))
     }
 }
 

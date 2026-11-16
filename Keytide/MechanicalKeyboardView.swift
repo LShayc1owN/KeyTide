@@ -2,7 +2,7 @@ import Cocoa
 import MetalKit
 
 extension Notification.Name {
-    static let keyboardTypingSelectionChanged = Notification.Name("KeyStats.keyboardTypingSelectionChanged")
+    static let keyboardTypingSelectionChanged = Notification.Name("Keytide.keyboardTypingSelectionChanged")
 }
 
 /// Only currently animating virtual clicks. No statistics or input history.
@@ -24,86 +24,165 @@ struct MechanicalFullPressState {
     mutating func cancel() { active.removeAll() }
 }
 
-final class KeyboardLegendOverlay: NSView {
-    let model: MechanicalKeyboardScene
-    var pixelScale: CGFloat = 1
-    override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    init(model: MechanicalKeyboardScene) {
-        self.model = model
-        super.init(frame: CGRect(origin: .zero, size: MechanicalKeyboardScene.size))
+struct KeyboardLegendMark {
+    let text: String
+    let symbol: Bool
+    let rect: CGRect
+    let fontSize: CGFloat
+    let font: NSFont
+    init(text: String, symbol: Bool = false, rect: CGRect, fontSize: CGFloat,
+         font: NSFont = .systemFont(ofSize: 12, weight: .medium)) {
+        self.text = text
+        self.symbol = symbol
+        self.rect = rect
+        self.fontSize = fontSize
+        self.font = font
     }
-    required init?(coder: NSCoder) { fatalError() }
-    private static let functionSymbols = ["sun.min", "sun.max", "rectangle.3.group", "magnifyingglass",
+}
+
+enum KeyboardLegendLayout {
+    static let functionSymbols = ["sun.min", "sun.max", "rectangle.3.group", "magnifyingglass",
         "mic", "moon", "backward.fill", "playpause.fill", "forward.fill", "speaker.slash.fill",
         "speaker.wave.1.fill", "speaker.wave.3.fill"]
-    private static let symbols: [String: NSImage] = Dictionary(uniqueKeysWithValues:
+    static let ink = NSColor(srgbRed: 0.20, green: 0.27, blue: 0.31, alpha: 1)
+    static let symbols: [String: NSImage] = Dictionary(uniqueKeysWithValues:
         (functionSymbols + ["globe"]).compactMap { name in
             NSImage(systemSymbolName: name, accessibilityDescription: nil).map { (name, $0) }
         })
 
-    override func draw(_ dirtyRect: NSRect) {
-        let ink = NSColor(srgbRed: 0.20, green: 0.27, blue: 0.31, alpha: 1)
-        func text(_ value: String, at point: CGPoint, size: CGFloat, alignment: NSTextAlignment = .center) {
-            let label = NSAttributedString(string: value, attributes: [
-                .font: NSFont.systemFont(ofSize: size, weight: .regular), .foregroundColor: ink])
-            let measured = label.size()
-            let x = alignment == .left ? point.x : alignment == .right ? point.x - measured.width : point.x - measured.width / 2
-            label.draw(at: CGPoint(x: x, y: point.y - measured.height / 2))
+    static func marks(for key: EditorialKeyboardSceneKey, top: CGRect) -> [KeyboardLegendMark] {
+        guard key.id != "Space", top.width > 0, top.height > 0 else { return [] }
+        let edge = min(6, top.width * 0.10)
+        let safe = top.insetBy(dx: edge, dy: min(4, top.height * 0.09))
+        let unit = min(safe.width, safe.height)
+        var result: [KeyboardLegendMark] = []
+        func mark(_ text: String, x: CGFloat, y: CGFloat, size: CGFloat,
+                  alignment: NSTextAlignment = .center, symbol: Bool = false) {
+            let base = min(18, min(top.width, top.height) * 0.40)
+            let fontSize = min(size, base * (symbol ? 0.94 : 0.90))
+            let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text,
+                attributes: [.font: font]))
+            let ink = CTLineGetImageBounds(line, nil)
+            // Use visible ink for both placement and drawing, not typographic line height.
+            let measured = symbol ? CGSize(width: fontSize, height: fontSize) : ink.size
+            let factor = min(1, safe.width / max(1, measured.width), safe.height / max(1, measured.height))
+            let finalFont = NSFont.systemFont(ofSize: fontSize * factor, weight: .medium)
+            let scaled = CGSize(width: measured.width * factor, height: measured.height * factor)
+            let originX = alignment == .left ? x : alignment == .right ? x - scaled.width : x - scaled.width / 2
+            let rect = CGRect(x: min(max(safe.minX, originX), safe.maxX - scaled.width),
+                y: min(max(safe.minY, y - scaled.height / 2), safe.maxY - scaled.height),
+                width: scaled.width, height: scaled.height)
+            result.append(.init(text: text, symbol: symbol, rect: rect,
+                fontSize: finalFont.pointSize, font: finalFont))
         }
-        func symbol(_ name: String, in rect: CGRect) {
-            Self.symbols[name]?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.85,
-                                     respectFlipped: true, hints: nil)
-        }
-        for key in model.keys {
-            guard key.id != "Space" else { continue }
-            let rect = model.legendRect(for: key, pixelScale: pixelScale)
-            let unit = min(rect.width, rect.height)
-            let font = min(18, unit * (["Up", "Down"].contains(key.id) ? 0.60 : 0.34))
-            let padding = max(3, unit * 0.10)
-            let bottom = rect.maxY - padding - font * 0.4
-            if key.id.hasPrefix("F"), let index = Int(key.id.dropFirst()), (1...12).contains(index) {
-                let side = min(16, unit * 0.30)
-                symbol(Self.functionSymbols[index - 1],
-                       in: CGRect(x: rect.midX - side / 2, y: rect.midY - side * 0.9, width: side, height: side))
-                text(key.id, at: CGPoint(x: rect.midX, y: bottom), size: min(9, unit * 0.19))
-            } else if let glyph = ["Esc": "esc", "Tab": "⇥", "CapsLock": "⇪", "LeftShift": "⇧",
-                                    "Delete": "⌫", "Return": "↩", "RightShift": "⇧"][key.id] {
-                let right = ["Delete", "Return", "RightShift"].contains(key.id)
-                text(glyph, at: CGPoint(x: right ? rect.maxX - padding : rect.minX + padding, y: bottom),
-                     size: key.id == "Esc" ? min(11, unit * 0.23) : font,
-                     alignment: right ? .right : .left)
-                if key.id == "CapsLock" {
-                    ink.withAlphaComponent(0.45).setFill()
-                    NSBezierPath(ovalIn: CGRect(x: rect.minX + padding, y: rect.minY + padding, width: 2.5, height: 2.5)).fill()
-                }
-            } else if key.id == "Fn" {
-                let side = min(13, unit * 0.25)
-                symbol("globe", in: CGRect(x: rect.minX + padding, y: bottom - side / 2, width: side, height: side))
-                text("fn", at: CGPoint(x: rect.maxX - padding, y: bottom), size: min(10, unit * 0.22), alignment: .right)
-            } else if let pair = ["Ctrl": ("⌃", "control"), "LeftOption": ("⌥", "option"),
-                                  "RightOption": ("⌥", "option"), "LeftCmd": ("⌘", "command"),
-                                  "RightCmd": ("⌘", "command")][key.id] {
-                let right = key.id.hasPrefix("Right")
-                text(pair.0, at: CGPoint(x: right ? rect.maxX - padding : rect.minX + padding,
-                                        y: rect.minY + padding + font / 2),
-                     size: font * 0.85, alignment: right ? .right : .left)
-                text(pair.1, at: CGPoint(x: rect.midX, y: bottom), size: min(10, unit * 0.21))
+        let font = min(18, unit * 0.40)
+        if key.id.hasPrefix("F"), let index = Int(key.id.dropFirst()), (1...12).contains(index) {
+            mark(functionSymbols[index - 1], x: safe.midX,
+                 y: safe.minY + safe.height * 0.40, size: min(13, unit * 0.29), symbol: true)
+            mark(key.id, x: safe.midX, y: safe.minY + safe.height * 0.78,
+                 size: min(9, unit * 0.20))
+        } else if let label = ["Tab": "tab", "CapsLock": "caps lock",
+                              "LeftShift": "shift", "RightShift": "shift",
+                              "Delete": "delete", "Return": "return"][key.id] {
+            let right = ["Delete", "Return", "RightShift"].contains(key.id)
+            mark(label, x: right ? safe.maxX : safe.minX, y: safe.maxY,
+                 size: min(13, unit * 0.30), alignment: right ? .right : .left)
+        } else if let glyph = ["Esc": "esc", "Fn": "fn"][key.id] {
+            if key.id == "Fn" {
+                mark(glyph, x: safe.minX, y: safe.minY + safe.height * 0.20,
+                     size: min(10, unit * 0.25), alignment: .left)
+                mark("globe", x: safe.minX, y: safe.minY + safe.height * 0.72,
+                     size: min(11, unit * 0.28), alignment: .left, symbol: true)
             } else {
-                let lines = key.legend.string.components(separatedBy: "\n")
-                if lines.count == 2 {
-                    text(lines[0], at: CGPoint(x: rect.midX, y: rect.midY - unit * 0.18), size: font * 0.76)
-                    text(lines[1], at: CGPoint(x: rect.midX, y: rect.midY + unit * 0.17), size: font * 0.90)
-                } else {
-                    text(key.legend.string, at: CGPoint(x: rect.midX, y: rect.midY), size: font)
-                    if key.id == "F" || key.id == "J" {
-                        ink.withAlphaComponent(0.45).setFill()
-                        NSBezierPath(roundedRect: CGRect(x: rect.midX - 3, y: rect.maxY - padding, width: 6, height: 1),
-                                     xRadius: 0.5, yRadius: 0.5).fill()
-                    }
-                }
+                mark(glyph, x: safe.minX, y: safe.midY, size: min(11, unit * 0.28), alignment: .left)
+            }
+        } else if ["Up", "Down", "Left", "Right"].contains(key.id) {
+            let arrows = ["Up": "↑", "Down": "↓", "Left": "←", "Right": "→"]
+            mark(arrows[key.id]!, x: safe.midX, y: safe.midY, size: min(15, unit * 0.48))
+        } else if let pair = ["Ctrl": ("⌃", "control"), "LeftOption": ("⌥", "option"),
+                            "RightOption": ("⌥", "option"), "LeftCmd": ("⌘", "command"),
+                            "RightCmd": ("⌘", "command")][key.id] {
+            let right = key.id.hasPrefix("Right")
+            mark(pair.0, x: right ? safe.maxX : safe.minX, y: safe.minY + safe.height * 0.28,
+                 size: font * 0.85, alignment: right ? .right : .left)
+            mark(pair.1, x: safe.midX, y: safe.maxY, size: min(11, unit * 0.27))
+        } else {
+            let lines = key.legend.string.components(separatedBy: "\n")
+            if lines.count == 2 {
+                mark(lines[0], x: safe.midX, y: safe.minY + safe.height * 0.30,
+                     size: font * 0.78)
+                mark(lines[1], x: safe.midX, y: safe.minY + safe.height * 0.66,
+                     size: font * 0.90)
+            } else {
+                mark(key.legend.string, x: safe.midX,
+                     y: safe.midY, size: font)
             }
         }
+        return result
+    }
+
+    static func draw(_ mark: KeyboardLegendMark) {
+        if mark.symbol {
+            symbols[mark.text]?.draw(in: mark.rect, from: .zero, operation: .sourceOver,
+                fraction: 0.85, respectFlipped: true, hints: nil)
+            return
+        }
+        let attributed = NSAttributedString(string: mark.text, attributes: [
+            .font: mark.font, .foregroundColor: ink])
+        let line = CTLineCreateWithAttributedString(attributed)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let bounds = CTLineGetImageBounds(line, nil)
+        context.saveGState()
+        context.textMatrix = .identity
+        context.translateBy(x: mark.rect.minX - bounds.minX, y: mark.rect.minY + bounds.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.textPosition = .zero
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+
+    static func draw(keys: [EditorialKeyboardSceneKey], rects: [String: CGRect]) {
+        for key in keys {
+            guard let rect = rects[key.id] else { continue }
+            for mark in marks(for: key, top: rect) {
+                draw(mark)
+            }
+            ink.withAlphaComponent(0.45).setFill()
+            if key.id == "F" || key.id == "J" {
+                NSBezierPath(roundedRect: CGRect(x: rect.midX - 3, y: rect.minY + rect.height * 0.73,
+                    width: 6, height: 1), xRadius: 0.5, yRadius: 0.5).fill()
+            }
+            if key.id == "CapsLock" {
+                NSBezierPath(ovalIn: CGRect(x: rect.minX + 4, y: rect.minY + 3, width: 2, height: 2)).fill()
+            }
+        }
+    }
+}
+
+final class KeyboardLegendOverlay: NSView {
+    private let keys: [EditorialKeyboardSceneKey]
+    private let model: MechanicalKeyboardScene?
+    var pixelScale: CGFloat = 1
+    var usesSnapshotProjection = false
+    var rects: [String: CGRect] = [:] { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    init(model: MechanicalKeyboardScene) {
+        self.model = model; keys = model.keys
+        super.init(frame: CGRect(origin: .zero, size: MechanicalKeyboardScene.size))
+    }
+    init(keys: [EditorialKeyboardSceneKey]) {
+        self.keys = keys; model = nil
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        // AppKit already maps bounds into frame; an additional scale would distort labels.
+        let projected = model.map { model in
+            Dictionary(uniqueKeysWithValues: keys.map { ($0.id, model.legendRect(for: $0, pixelScale: pixelScale, snapshot: usesSnapshotProjection)) })
+        } ?? rects
+        KeyboardLegendLayout.draw(keys: keys, rects: projected)
     }
 }
 
@@ -129,6 +208,7 @@ final class MechanicalKeyboardView: NSView, MTKViewDelegate {
     var hasScheduledFrame: Bool { pending != nil }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    static func physicalKeyID(_ code: UInt16) -> String? { physicalKeys[code] }
     private static let physicalKeys: [UInt16: String] = [
         0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B",
         12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4",
@@ -241,6 +321,15 @@ final class MechanicalKeyboardView: NSView, MTKViewDelegate {
         legends.needsDisplay = true
     }
     private func drawOnce() { if eligible { metal.draw() } }
+    func updateDisplayResolution() {
+        guard let window else { return }
+        let size = window.convertToBacking(metal.convert(metal.bounds, to: nil)).size
+        if size.width > 0, size.height > 0, metal.drawableSize != size {
+            metal.autoResizeDrawable = false
+            metal.drawableSize = size
+        }
+        drawOnce()
+    }
     func press(_ id: String) {
         guard eligible, state.supported.contains(id) else { return }
         state.press(id, at: ProcessInfo.processInfo.systemUptime)
@@ -269,6 +358,7 @@ final class MechanicalKeyboardView: NSView, MTKViewDelegate {
         let snapshot = model.snapshot()
         let exportLegends = KeyboardLegendOverlay(model: model)
         exportLegends.pixelScale = 3
+        exportLegends.usesSnapshotProjection = true
         guard let bitmap = KeyboardImageBitmap.make(size: MechanicalKeyboardScene.size, draw: {
             snapshot.draw(in: CGRect(origin: .zero, size: MechanicalKeyboardScene.size), from: .zero,
                           operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)

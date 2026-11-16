@@ -2,6 +2,7 @@ import Foundation
 import Cocoa
 import CoreGraphics
 import ApplicationServices
+import Carbon
 
 protocol EventPayloadSink: AnyObject {
     func forward(payload: [String: Any])
@@ -15,9 +16,15 @@ final class EventTapController {
     private let mouseSampleInterval: TimeInterval = 1.0 / 30.0
     private var lastMouseSampleTime: TimeInterval = 0
     private let lock = NSLock()
+    private var recordsReplay = false
+
+    func setReplayRecordingEnabled(_ enabled: Bool) {
+        lock.lock(); recordsReplay = enabled; lock.unlock()
+    }
 
     private static let eventMask: CGEventMask = {
         let keyboard = (1 << CGEventType.keyDown.rawValue) |
+                       (1 << CGEventType.keyUp.rawValue) |
                        (1 << CGEventType.flagsChanged.rawValue) |
                        (1 << SystemMediaKey.eventType.rawValue)
         let mouse = (1 << CGEventType.leftMouseDown.rawValue) |
@@ -82,6 +89,7 @@ final class EventTapController {
         runLoopSource = nil
         sink = nil
         lastMouseSampleTime = 0
+        recordsReplay = false
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
@@ -99,7 +107,11 @@ final class EventTapController {
             break
         }
 
-        guard let payload = PayloadBuilder.build(from: event, type: type) else { return }
+        lock.lock(); let records = recordsReplay; lock.unlock()
+        // Never attempt to bypass Secure Event Input. Aggregation retains its
+        // existing behavior, but replay metadata is suppressed while protected.
+        let captures = records && !IsSecureEventInputEnabled()
+        guard let payload = PayloadBuilder.build(from: event, type: type, recordsReplay: captures) else { return }
         sink?.forward(payload: payload)
     }
 }

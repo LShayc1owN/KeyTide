@@ -32,6 +32,7 @@ final class GrowthPlaybackDriver {
     private var generation = 0
     private var awaitingPresentation = false
     var waitsForPresentation = false
+    var replaysSingleDay = false
     var stepInterval: TimeInterval = 0.15
     var presentationGeneration: Int { generation }
     var isPresentingPlaybackFrame: Bool { waitsForPresentation && (state.isPlaying || awaitingPresentation) }
@@ -66,9 +67,16 @@ final class GrowthPlaybackDriver {
         guard isActive else { return }
         pause()
         state.start()
-        awaitingPresentation = waitsForPresentation && state.isPlaying
+        awaitingPresentation = waitsForPresentation && (state.isPlaying || replaysSingleDay)
         onChange?(state.offset)
         enqueue()
+    }
+
+    func playSelection() {
+        guard isActive else { return }
+        pause()
+        awaitingPresentation = waitsForPresentation
+        onChange?(state.offset)
     }
 
     func pause() {
@@ -104,5 +112,33 @@ final class GrowthPlaybackDriver {
         let work = DispatchWorkItem(block: action)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         return { work.cancel() }
+    }
+}
+
+/// Real order with a bounded presentation clock. The source event's millisecond
+/// timestamp is untouched; only Entry.seconds is compressed for viewing.
+/// An empty day never synthesizes input from daily totals.
+struct GrowthReplayPressPlan {
+    let entries: [KeyReplayDay.Entry]
+    let isAccelerated: Bool
+    static let maximumDaySeconds = 8.0
+    static let maximumGapSeconds = 0.12
+
+    init(day: KeyReplayDay) {
+        var previous = day.entries.first?.seconds ?? 0
+        var time = 0.0
+        let clipped = day.entries.map { entry -> KeyReplayDay.Entry in
+            let delta = max(0, entry.seconds - previous)
+            time += min(Self.maximumGapSeconds, delta)
+            previous = entry.seconds
+            return .init(seconds: time, event: entry.event, startsSession: entry.startsSession)
+        }
+        let scale = time > 0 ? min(1, Self.maximumDaySeconds / time) : 1
+        entries = clipped.map { .init(seconds: $0.seconds * scale, event: $0.event, startsSession: $0.startsSession) }
+        isAccelerated = (entries.last?.seconds ?? 0) + 0.000_001 < (day.entries.last?.seconds ?? 0)
+    }
+    var ids: [String] { entries.filter { $0.event.phase != .up }.compactMap { MechanicalKeyboardView.physicalKeyID($0.event.keyCode) } }
+    func duration(profile: MechanicalPressProfile) -> Double {
+        (entries.last?.seconds ?? 0) + (entries.isEmpty ? 0 : profile.duration)
     }
 }

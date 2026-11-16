@@ -1,5 +1,5 @@
 #!/bin/bash
-# Inner-first ad-hoc 签名 Keytide.app 及其内嵌 KeyStatsHelper.app。
+# Inner-first ad-hoc 签名 Keytide.app 及其内嵌 KeytideHelper.app。
 #
 # 先签 helper（用 helper 自己的 entitlements），再签外层主 app 且不带 --deep。
 # 这样 helper 的 cdhash 只取决于自身字节，跨版本升级若 helper 未变 ⇒ cdhash 稳定
@@ -18,11 +18,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_ENTITLEMENTS="$PROJECT_DIR/Keytide/Keytide.entitlements"
-HELPER_ENTITLEMENTS="$PROJECT_DIR/KeyStatsHelper/KeyStatsHelper.entitlements"
-HELPER_APP_PATH="$APP_PATH/Contents/Resources/KeyStatsHelper.app"
+HELPER_ENTITLEMENTS="$PROJECT_DIR/KeytideHelper/KeytideHelper.entitlements"
+HELPER_APP_PATH="$APP_PATH/Contents/Resources/KeytideHelper.app"
 
 if [ ! -d "$HELPER_APP_PATH" ]; then
-    echo "❌ 未找到内嵌 KeyStatsHelper.app: $HELPER_APP_PATH" >&2
+    echo "❌ 未找到内嵌 KeytideHelper.app: $HELPER_APP_PATH" >&2
     exit 1
 fi
 
@@ -41,4 +41,4 @@ else
 fi
 
 HELPER_CDHASH=$(codesign -d -vvv "$HELPER_APP_PATH" 2>&1 | awk -F'=' '/^CDHash=/ {print $2}')
-echo "🔑 KeyStatsHelper CDHash: ${HELPER_CDHASH:-<unknown>}"
+echo "🔑 KeytideHelper CDHash: ${HELPER_CDHASH:-<unknown>}"

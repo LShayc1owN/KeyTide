@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// - 从主 app Resources 里找 KeyStatsHelper.app 并拷到 Application Support
+/// - 从主 app Resources 里找 KeytideHelper.app 并拷到 Application Support
 /// - 按 cdhash 判断是否需要覆盖（cdhash 稳定 ⇒ TCC 授权跨升级保留的前提）
 /// - 写入 LaunchAgent plist 并 bootstrap
 final class HelperSupervisor {
@@ -49,18 +49,31 @@ final class HelperSupervisor {
             }
         }
 
-        try ensureLaunchAgentRegistered(helperWasCopied: shouldCopy)
+        // Prepare all files before disturbing the old running service.
+        let previousNewData = try? Data(contentsOf: HelperLocations.launchAgentPlistURL)
+        let changed = try writeLaunchAgentPlist()
+        let home = fm.homeDirectoryForCurrentUser
+        let legacyURL = home.appendingPathComponent("Library/LaunchAgents/com.xuanlprk.KeyStatsMac.helper.plist")
+        let legacy = try HelperServiceSwitch.matchingLegacy(at: legacyURL, home: home) { label in
+            self.runLaunchctl(["print", "gui/\(getuid())/\(label)"]).status == 0
+        }
+        let transaction = HelperServiceSwitch(fileManager: fm, unload: { label in
+            let service = "gui/\(getuid())/\(label)"
+            guard self.runLaunchctl(["print", service]).status == 0 else { return }
+            let result = self.runLaunchctl(["bootout", service])
+            guard result.status == 0 else { throw SupervisorError.launchctlFailed(result.status, result.stderr) }
+        }, load: { url in
+            let result = self.runLaunchctl(["bootstrap", "gui/\(getuid())", url.path])
+            guard result.status == 0 else { throw SupervisorError.launchctlFailed(result.status, result.stderr) }
+        })
+        try transaction.perform(legacy: legacy, newURL: HelperLocations.launchAgentPlistURL, previousNewData: previousNewData) {
+            if shouldCopy || changed || !self.isLaunchAgentLoaded() {
+                try self.bootstrapLaunchAgent(restartExisting: shouldCopy || changed)
+            }
+        }
     }
 
     // MARK: - LaunchAgent
-
-    private func ensureLaunchAgentRegistered(helperWasCopied: Bool) throws {
-        let plistChanged = try writeLaunchAgentPlist()
-        guard helperWasCopied || plistChanged || !isLaunchAgentLoaded() else {
-            return
-        }
-        try bootstrapLaunchAgent(restartExisting: helperWasCopied || plistChanged)
-    }
 
     @discardableResult
     private func writeLaunchAgentPlist() throws -> Bool {
@@ -116,8 +129,8 @@ final class HelperSupervisor {
     private func bundledHelperURL() -> URL? {
         let fm = FileManager.default
         let candidates = [
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/KeyStatsHelper.app"),
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LoginItems/KeyStatsHelper.app"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/KeytideHelper.app"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LoginItems/KeytideHelper.app"),
         ]
         for c in candidates where fm.fileExists(atPath: c.path) {
             return c

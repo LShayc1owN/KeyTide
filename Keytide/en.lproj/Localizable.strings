@@ -1,5 +1,5 @@
 "permission.title" = "Accessibility Permission Required";
-"permission.message" = "Keytide needs Accessibility access to count keyboard and mouse activity.\n\nClick \"Open Permission Guide\" to open Privacy & Security > Accessibility. Find KeyStatsHelper in the list and toggle it on to finish authorization.";
+"permission.message" = "Keytide needs Accessibility access to count keyboard and mouse activity.\n\nClick \"Open Permission Guide\" to open Privacy & Security > Accessibility. Find KeytideHelper in the list and toggle it on to finish authorization.";
 "permission.reinstallTip" = "You only need to grant access once — future updates will not ask for authorization again.";
 "permission.openSettings" = "Open Permission Guide";
 "permission.later" = "Later";
@@ -224,7 +224,7 @@
 "activity.openGrowthFor" = "View keyboard growth through %@";
 "activity.moreInsights" = "More insights & fun facts";
 "activity.lifetimeFormat" = "All time: %@ keys · %@ clicks · %@ mouse movement · %@ scrolling\n%@";
-"activity.privacy" = "Only aggregate counts are stored. Your input is never recorded.";
+"activity.privacy" = "Statistics and optional replay records stay on this Mac. No input records are uploaded.";
 "heatmap.dailyScope" = "Daily counts";
 "appStats.button" = "App Stats";
 "appStats.range.today" = "Today";
@@ -273,8 +273,6 @@
 "heatmap.detailFormat" = "%d keys · %d clicks";
 "helperMigration.title" = "One-time authorization required";
 "helperMigration.body" = "Keytide now uses a lightweight helper for keyboard and mouse monitoring. This is the last manual authorization — once done, no future update will ask for it again.";
-"helperMigration.autoReset.success" = "We cleared the old \"KeyStats\" entry for you. Please authorize \"KeyStatsHelper\" in the Accessibility list that opens next.";
-"helperMigration.autoReset.manual" = "Please open System Settings → Privacy & Security → Accessibility, remove the old \"KeyStats\" entry with the minus button, then authorize \"KeyStatsHelper\".";
 "helperMigration.openSettings" = "Open System Settings";
 "helperMigration.later" = "Later";
 
@@ -360,7 +358,7 @@
 "growth.mode.editorial" = "Editorial 2.5D";
 "growth.mode.3d" = "3D Growth";
 "growth.mode.choose" = "Keyboard display mode";
-"growth.mode.3d.help" = "Play cumulative 3D growth from Day 1 to Today. Playback pauses when the window loses focus.";
+"growth.mode.3d.help" = "Play captured keys in their original order at an accelerated pace. Long idle gaps are shortened; a busy day takes about 8 seconds. Original millisecond timestamps are unchanged. Dates without records show daily growth only. Use Day scope for one date. Playback stops when focus leaves the window.";
 "growth.mode.3d.description" = "Complete 77-key 3D Growth keyboard";
 
 "mechanicalKeyboard.title" = "Mechanical Keyboard";
@@ -390,6 +388,8 @@
 "keyboard.model.choose" = "Keyboard model";
 "keyboard.model.help" = "Switch between the slim Mac and sculpted mechanical keycaps.";
 "keyboard.model.mechanical" = "Mechanical";
+"keyboard.viewport.fit" = "Fit keyboard to window";
+"keyboard.viewport.help" = "Pinch to zoom. Scroll with two fingers to pan. Fit to window resets the view.";
 "keyboard.mode.growth" = "Growth";
 "keyboard.mode.choose" = "Keyboard experience";
 "growth.metric.caption" = "Cumulative key presses";
@@ -410,8 +410,8 @@
 "keyboard.typing.mouse" = "Click any keycap to try its travel and return.";
 "keyboard.typing.keyboard.title" = "Use your keyboard";
 "keyboard.typing.keyboard" = "Type while this window is focused. Only supported keys respond.";
-"keyboard.typing.privacy.title" = "Just a moment, not a record";
-"keyboard.typing.privacy" = "Keystrokes stay in memory for the animation. No text or typing sequence is saved.";
+"keyboard.typing.privacy.title" = "Typing and recording are separate";
+"keyboard.typing.privacy" = "The typing animation does not save records. Physical keys are still recorded if true replay recording is enabled.";
 "keyboard.insight.close" = "Close key details";
 "keyboard.replay.toggle" = "Show or hide playback controls";
 "keyboard.typing.compact" = "Click a cap or type here.\nA moment of play. Nothing recorded.";
@@ -552,3 +552,128 @@
 "activity.insight.mousePeak" = "The mouse’s busiest day";
 "activity.insight.revision" = "Deleting is progress, too. Share of Backspace/Delete presses.";
 "activity.insight.recordedDays" = "%d days with recorded activity. Quiet squares are gaps in the record, not a verdict on your day.";
+
+// Collection status and permission guidance
+"monitoring.retry" = "Collection failed · Retry";
+"monitoring.permissionFailed" = "Accessibility permission is unavailable. Open the permission guide and authorize KeytideHelper, then retry.";
+"monitoring.tapFailed" = "Input monitoring could not start. Check KeytideHelper’s privacy permissions, then retry.";
+"monitoring.installFailed" = "The collection service could not be installed or started. Retry to repair it.";
+"helperMigration.authorizationOnly" = "Keytide uses KeytideHelper to collect aggregate keyboard and mouse statistics. Please authorize the new Helper in System Settings → Privacy & Security → Accessibility. Old permission entries have not been changed.";
+
+// Welcome guide
+"welcome.window" = "Welcome to Keytide";
+"welcome.title" = "Meet Keytide.";
+"welcome.subtitle" = "Your everyday input, beautifully in view.";
+"welcome.privacy" = "Only aggregate statistics by default.\nOptional true replay saves key order and timing on this Mac.";
+"welcome.menubar" = "Look for the keycap in your menu bar.\nYour stats live there, even with this window closed.";
+"welcome.start" = "Get started";
+"welcome.later" = "Set up later";
+"welcome.preview" = "See it in action";
+"welcome.previewTitle" = "Your keyboard has a story.";
+"welcome.previewBody" = "Explore a local 3D demo first. No permissions or recording needed.";
+"welcome.connect" = "Just one permission.";
+"welcome.connectBody" = "KeytideHelper is Keytide’s collection service. Enable it in System Settings → Privacy & Security → Accessibility to count keyboard and mouse activity.";
+"welcome.service" = "Keytide service";
+"welcome.permission" = "Accessibility";
+"welcome.capture" = "Activity statistics";
+"welcome.servicePreparing" = "Preparing securely on this Mac…";
+"welcome.serviceReady" = "Service · Prepared";
+"welcome.serviceFailed" = "Service · Needs attention";
+"welcome.permissionWaiting" = "Accessibility · Waiting for authorization";
+"welcome.permissionCheck" = "Accessibility · Check privacy permissions";
+"welcome.captureWaiting" = "Collection · Not started yet";
+"welcome.captureFailed" = "Collection · Could not start";
+"welcome.openSettings" = "Open System Settings";
+"welcome.ready" = "You’re ready.";
+"welcome.readyBody" = "Collection has started. Your stats will grow as you use your Mac.";
+"welcome.firstPress" = "The first press is yours.";
+"welcome.menuReminder" = "Open Keytide from the menu bar whenever you’re curious.";
+"welcome.login" = "Open Keytide at login";
+"welcome.openStats" = "Open statistics";
+"welcome.openKeyboard" = "Explore the 3D keyboard";
+"welcome.permissionGranted" = "Authorized";
+"welcome.stateReady" = "Ready";
+"welcome.stateFailed" = "Needs attention";
+"welcome.statePending" = "Not started";
+"welcome.stateCheck" = "Check connection";
+"welcome.firstReceived" = "There it is. This one is yours.";
+"welcome.step1" = "01  /  WELCOME";
+"welcome.step2" = "02  /  CONNECT";
+"welcome.step3" = "03  /  READY";
+"welcome.reopen" = "Open welcome guide";
+
+// Explicit opt-in, local-only chronological replay.
+"replay.recording.title" = "True replay recording";
+"replay.recording.enable" = "Save actual key order";
+"replay.recording.help" = "Off by default. Records physical key order, presses, releases and millisecond timing across apps. Encrypted on this Mac until you delete it. Sequences may reveal typed content. Never uploaded or included in statistics exports. Stopping keeps existing records.";
+"replay.recording.off" = "True replay recording · Off";
+"replay.recording.on" = "True replay recording · Recording";
+"replay.recording.starting" = "True replay recording · Connecting";
+"replay.recording.suspended" = "True replay recording · Suspended";
+"replay.recording.unavailable" = "Recording unavailable or stopped. Check the updated Helper, permissions and local storage, then enable again. No plaintext fallback is used.";
+"replay.recording.stop" = "Stop true replay recording";
+"replay.recording.delete" = "Delete all replay records…";
+"replay.consent.title" = "Record actual key order across apps?";
+"replay.consent.body" = "Records which physical keys you press across apps, their order, and press/release times in milliseconds. Even without reading text fields, records may reveal passwords, messages and other typed content. Not every sensitive input can be identified.\n\nEncrypted on this Mac, never uploaded, and retained until you delete it. A red menu bar dot indicates the feature is enabled; use the context menu to stop. System-protected input and disconnections leave gaps. Old history cannot recover key order.";
+"replay.consent.enable" = "Enable local recording";
+"replay.delete.title" = "Permanently delete all replay records?";
+"replay.delete.body" = "Also stops recording. Aggregate counts, app statistics and cumulative growth are kept. Actual key order for these dates cannot be recovered.";
+"replay.delete.failed" = "Some replay records could not be deleted. Check local file access.";
+"replay.loading" = "Loading local replay records…";
+"replay.coverage" = "Accelerated playback of captured segments only. Gaps are never filled with invented keys.";
+"replay.noDetails" = "No key-order records for this date. Daily growth only.";
+"replay.unreadable" = "Some local replay records could not be read. No replacement keystrokes were generated.";
+"replay.playDay" = "Replay this day";
+
+// Built-in replay example; never merged with personal statistics.
+"replay.example.scope" = "Demo replay";
+"replay.example.play" = "Play example";
+"replay.example.return" = "Back";
+"replay.example.returnHelp" = "Exit the example and restore your statistics";
+"replay.example.help" = "Built-in synthetic data to try key presses and growth. Never added to your statistics.";
+"replay.example.metric" = "Demo cumulative key presses";
+"replay.example.summary" = "Demo replay · Day %d · Synthetic data";
+
+"growth.key.mediaBreakdown" = "F-key presses %@ · Media actions %@\nMedia actions are grouped by the displayed icons.";
+
+/* Trackpad phase-one preview: no persistence. */
+"trackpad.keyboard" = "Keyboard";
+"trackpad.title" = "Trackpad";
+"trackpad.stage" = "Studio stage";
+"trackpad.canvas" = "Live trackpad surface, normalized finger positions";
+"trackpad.haptics" = "Light haptics";
+"trackpad.start" = "Start preview";
+"trackpad.stop" = "Stop preview";
+"trackpad.ink" = "Ink";
+"trackpad.stardust" = "Stardust";
+"trackpad.brush" = "Trackpad brush";
+"trackpad.clear" = "Clear";
+"trackpad.preview.help" = "Live preview. Click canvas to hide pointer; Esc exits. Background recording requires separate consent.";
+"trackpad.ready" = "Preview off · No recording";
+"trackpad.waiting" = "Waiting for real touches · Device availability does not guarantee touch delivery";
+"trackpad.unavailable" = "Trackpad preview unavailable on this device. Keyboard and mouse statistics are unaffected.";
+"trackpad.live" = "%ld contacts · Source clock %.3f s · Preview, not recording";
+
+"growth.key.systemActionUnavailable" = "F-key counts only. The system action on this icon is not currently captured.";
+
+"trackpad.record" = "Record locally";
+
+"trackpad.record.stop" = "Stop recording";
+
+"trackpad.replay" = "Replay day";
+
+"trackpad.delete" = "Delete records";
+
+"trackpad.delete.confirm" = "Delete all trackpad recordings? Statistics are kept.";
+
+"trackpad.cancel" = "Cancel";
+
+"trackpad.failed" = "Recording unavailable or storage failed.";
+
+"trackpad.recording" = "Recording locally; continues after closing this window";
+
+"trackpad.replay.empty" = "No readable recording for this date.";
+
+"trackpad.consent" = "Record finger positions, order, source timestamps and relative pressure across apps? Encrypted on this Mac until manually deleted. No upload or statistics export. Closing this window does not stop recording.";
+
+"trackpad.record.always" = "Always record in background";

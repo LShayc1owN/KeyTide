@@ -2,6 +2,29 @@ import XCTest
 @testable import KeytideCore
 
 final class PhysicalKeyMappingTests: XCTestCase {
+    func testMediaDisplayCombinesCountsWithoutChangingPhysicalMappingOrHistory() {
+        let input = ["F2": 3, "BrightnessUp": 7, "VolumeUp": 4, "PlayPause": 2,
+                     "PreviousTrack": 5, "Rewind": 1, "KeyboardBrightnessUp": 9, "Key160": 2]
+        let display = PhysicalKeyMapping.mapForDisplay(input)
+        XCTAssertEqual(display.counts, ["F2": 10, "F12": 4, "F8": 2, "F7": 6])
+        XCTAssertEqual(display.mediaCounts, ["F2": 7, "F12": 4, "F8": 2, "F7": 6])
+        XCTAssertEqual(display.unsupported, ["KeyboardBrightnessUp": 9, "Key160": 2])
+        XCTAssertEqual(PhysicalKeyMapping.map(input).counts, ["F2": 3])
+        XCTAssertEqual(input["F2"], 3)
+        for id in ["F3", "F4", "F5", "F6"] {
+            XCTAssertNil(display.counts[id])
+            XCTAssertFalse(PhysicalKeyMapping.hasMediaDisplayKey(id))
+        }
+    }
+
+    func testMediaDisplaySaturatesAndDoesNotAssignUnsupportedSystemActions() {
+        let display = PhysicalKeyMapping.mapForDisplay(["F12": Int.max, "VolumeUp": 1,
+            "MissionControl": 5, "Dictation": 2, "Spotlight": 8, "Focus": 3])
+        XCTAssertEqual(display.counts["F12"], Int.max)
+        XCTAssertEqual(display.mediaCounts["F12"], 1)
+        XCTAssertEqual(display.unsupported, ["MissionControl": 5, "Dictation": 2, "Spotlight": 8, "Focus": 3])
+    }
+
     func testOrdinaryKeysAndPunctuation() {
         let keys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".map(String.init)
             + ["`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/",
