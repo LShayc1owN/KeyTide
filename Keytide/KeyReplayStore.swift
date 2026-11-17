@@ -134,6 +134,22 @@ final class KeyReplayStore {
         }
     }
 
+    /// Snapshot file lengths on the writer queue; decryption runs on the reader queue.
+    func makeReader(day: String, cancellation: KeyReplayCancellation = KeyReplayCancellation()) throws -> KeyReplayStream {
+        guard Self.valid(day) else { throw Failure.invalidDay }
+        let folder = directory.appendingPathComponent(day, isDirectory: true)
+        var snapshots: [(URL, UInt64)] = []
+        if files.fileExists(atPath: folder.path) {
+            try rejectSymlink(folder)
+            for url in try files.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey]) where url.pathExtension == "ktr" {
+                try rejectSymlink(url)
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                snapshots.append((url, UInt64(max(0, size))))
+            }
+        }
+        return KeyReplayStream(files: snapshots, key: key, day: day, cancellation: cancellation)
+    }
+
     private static func valid(_ day: String) -> Bool {
         day.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil
     }
@@ -150,6 +166,212 @@ final class KeyReplayStore {
     }
 }
 
+/// Cancellation is synchronous; all reader state and I/O stays on its own serial queue.
+final class KeyReplayCancellation {
+    private let lock = NSLock()
+    private var cancelled = false
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+}
+
+/// Retains chunk metadata and bounded event buffers, never a whole day's plaintext.
+/// Existing authenticated v1 session files remain unchanged.
+final class KeyReplayStream {
+    struct Slice {
+        let entries: [KeyReplayDay.Entry]
+        let nextSeconds: Double?
+        let nextStartsSession: Bool
+        let failed: Bool
+        var done: Bool { nextSeconds == nil }
+    }
+    private struct Chunk {
+        let url: URL
+        let offset: UInt64
+        let length: Int
+        let session: UUID
+        let startedAt: Date
+        let order: UInt64?
+        let first: UInt64
+        let last: UInt64
+        let count: Int
+    }
+    private let files: [(URL, UInt64)]
+    private let key: SymmetricKey
+    private let aad: Data
+    private let queue = DispatchQueue(label: "Keytide.KeyReplayReader", qos: .userInitiated)
+    let cancellation: KeyReplayCancellation
+    private var chunks: [Chunk] = []
+    private var chunkIndex = 0
+    private var buffer: [KeyReplayEvent] = []
+    private var bufferIndex = 0
+    private var bufferChunk: Chunk?
+    private var session: UUID?
+    private var sessionStart = 0.0
+    private var origin: Date?
+    private var firstTime: Double?
+    private var previousTime = 0.0
+    private var compressedTime = 0.0
+    private var previousRaw: Double?
+    private var pending: KeyReplayDay.Entry?
+    private var scale = 1.0
+    private(set) var eventCount = 0
+    private(set) var hasUnreadableChunks = false
+    private(set) var isAccelerated = false
+    private(set) var duration = 0.0
+
+    init(files: [(URL, UInt64)], key: SymmetricKey, day: String, cancellation: KeyReplayCancellation = KeyReplayCancellation()) {
+        self.cancellation = cancellation
+        self.files = files; self.key = key
+        aad = Data(("Keytide.KeyReplay.v1/" + day).utf8)
+    }
+    func cancel() {
+        cancellation.cancel()
+        queue.async { [weak self] in self?.chunks = []; self?.buffer = []; self?.pending = nil }
+    }
+    private func checkCancellation() throws {
+        if cancellation.isCancelled { throw CancellationError() }
+    }
+    private func decode(_ url: URL, offset: UInt64, length: Int) throws -> KeyReplayBatch {
+        try checkCancellation()
+        guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw KeyReplayStore.Failure.unsafePath }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: offset)
+        guard let bytes = try handle.read(upToCount: length), bytes.count == length else { throw KeyReplayStore.Failure.invalidBatch }
+        let data = try AES.GCM.open(AES.GCM.SealedBox(combined: bytes), using: key, authenticating: aad)
+        let batch = try JSONDecoder().decode(KeyReplayBatch.self, from: data)
+        guard batch.version == 1, !batch.events.isEmpty, batch.events.count <= 128,
+              batch.startedAt.timeIntervalSince1970.isFinite,
+              batch.events.allSatisfy({ $0.keyCode <= 255 && $0.growthKeys.count <= 8 }) else { throw KeyReplayStore.Failure.invalidBatch }
+        return batch
+    }
+    func prepare(completion: @escaping (Result<GrowthReplayPressPlan, Error>) -> Void) {
+        queue.async {
+            do {
+                try self.indexChunks()
+                self.resetCursor()
+                var last = 0.0
+                while let entry = try self.nextRaw() {
+                    self.compressedTime += min(GrowthReplayPressPlan.maximumGapSeconds, max(0, entry.seconds - last))
+                    last = entry.seconds
+                }
+                self.scale = self.compressedTime > 0 ? min(1, GrowthReplayPressPlan.maximumDaySeconds / self.compressedTime) : 1
+                self.duration = self.compressedTime * self.scale
+                self.isAccelerated = self.duration + 0.000_001 < last
+                self.resetCursor()
+                try self.checkCancellation()
+                DispatchQueue.main.async {
+                    guard !self.cancellation.isCancelled else { return }
+                    completion(.success(GrowthReplayPressPlan(stream: self)))
+                }
+            } catch {
+                self.chunks = []; self.buffer = []
+                DispatchQueue.main.async {
+                    guard !self.cancellation.isCancelled else { return }
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    private func indexChunks() throws {
+        for (url, size) in files {
+            try checkCancellation()
+            do {
+                guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw KeyReplayStore.Failure.unsafePath }
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                var offset: UInt64 = 0
+                var fileSession: UUID?
+                while offset < size {
+                    try checkCancellation()
+                    try handle.seek(toOffset: offset)
+                    guard size - offset >= 4, let prefix = try handle.read(upToCount: 4), prefix.count == 4 else { throw KeyReplayStore.Failure.invalidBatch }
+                    let length = prefix.enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) }
+                    guard length > 0, length <= 1_048_576, UInt64(length) <= size - offset - 4 else { throw KeyReplayStore.Failure.invalidBatch }
+                    let batch = try autoreleasepool { try decode(url, offset: offset + 4, length: Int(length)) }
+                    guard fileSession == nil || fileSession == batch.session else { throw KeyReplayStore.Failure.invalidBatch }
+                    fileSession = batch.session
+                    let sorted = batch.events.sorted { $0.ordinal < $1.ordinal }
+                    chunks.append(Chunk(url: url, offset: offset + 4, length: Int(length), session: batch.session,
+                        startedAt: batch.startedAt, order: batch.recordingOrder, first: sorted.first!.ordinal,
+                        last: sorted.last!.ordinal, count: sorted.count))
+                    offset += 4 + UInt64(length)
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { hasUnreadableChunks = true }
+        }
+        chunks.sort {
+            if $0.order != $1.order { return ($0.order ?? 0) < ($1.order ?? 0) }
+            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+            if $0.session != $1.session { return $0.session.uuidString < $1.session.uuidString }
+            return $0.first < $1.first
+        }
+        // The writer's ordinals are strictly increasing across bounded chunks.
+        // Reject overlapping/malformed chunks rather than invent an input sequence.
+        var previous: Chunk?
+        chunks = chunks.filter { chunk in
+            if let p = previous, p.session == chunk.session, chunk.first <= p.last {
+                hasUnreadableChunks = true; return false
+            }
+            previous = chunk; return true
+        }
+        eventCount = chunks.reduce(0) { $0 + $1.count }
+    }
+    private func resetCursor() {
+        chunkIndex = 0; buffer = []; bufferIndex = 0; bufferChunk = nil
+        session = nil; origin = nil; firstTime = nil; sessionStart = 0; previousTime = 0
+        compressedTime = 0; previousRaw = nil; pending = nil
+    }
+    private func nextRaw() throws -> KeyReplayDay.Entry? {
+        try checkCancellation()
+        if bufferIndex >= buffer.count {
+            guard chunkIndex < chunks.count else { buffer = []; return nil }
+            let chunk = chunks[chunkIndex]; chunkIndex += 1
+            buffer = try autoreleasepool { try decode(chunk.url, offset: chunk.offset, length: chunk.length).events.sorted { $0.ordinal < $1.ordinal } }
+            bufferIndex = 0; bufferChunk = chunk
+        }
+        let chunk = bufferChunk!, event = buffer[bufferIndex]; bufferIndex += 1
+        let startsSession = session != chunk.session
+        if startsSession {
+            if origin == nil { origin = chunk.startedAt }
+            sessionStart = max(previousTime, chunk.startedAt.timeIntervalSince(origin!))
+            session = chunk.session
+        }
+        let time = max(0, sessionStart + Double(event.milliseconds) / 1000)
+        if firstTime == nil { firstTime = time }
+        previousTime = time
+        return .init(seconds: max(0, time - firstTime!), event: event, startsSession: startsSession)
+    }
+    /// At most 1024 due events plus one lookahead are delivered per call.
+    func take(through time: Double, completion: @escaping (Slice) -> Void) {
+        queue.async {
+            do {
+                var output: [KeyReplayDay.Entry] = []
+                while output.count < 1024 {
+                    try self.checkCancellation()
+                    if self.pending == nil {
+                        guard let raw = try self.nextRaw() else { break }
+                        self.compressedTime += min(GrowthReplayPressPlan.maximumGapSeconds, max(0, raw.seconds - (self.previousRaw ?? raw.seconds)))
+                        self.previousRaw = raw.seconds
+                        self.pending = .init(seconds: self.compressedTime * self.scale, event: raw.event, startsSession: raw.startsSession)
+                    }
+                    guard let next = self.pending, next.seconds <= time else { break }
+                    output.append(next); self.pending = nil
+                }
+                // A full slice may have more due work. Do not finish or release held keys at this boundary.
+                let nextTime = self.pending?.seconds ?? (output.count == 1024 ? time : nil)
+                let slice = Slice(entries: output, nextSeconds: nextTime, nextStartsSession: self.pending?.startsSession ?? false, failed: false)
+                DispatchQueue.main.async { if !self.cancellation.isCancelled { completion(slice) } }
+            } catch {
+                self.buffer = []; self.chunks = []; self.pending = nil
+                DispatchQueue.main.async {
+                    if !self.cancellation.isCancelled { completion(Slice(entries: [], nextSeconds: nil, nextStartsSession: false, failed: true)) }
+                }
+            }
+        }
+    }
+}
+
 /// Pure ingress policy and timestamp conversion. No text, app identity, network,
 /// defaults or global listener. A new session is needed after a capture gap.
 struct KeyReplaySession {
@@ -158,6 +380,10 @@ struct KeyReplaySession {
     let originNanoseconds: UInt64
     private(set) var ordinal: UInt64 = 0
     private var lastNanoseconds: UInt64 = 0
+    init(startedAt: Date, originNanoseconds: UInt64) {
+        self.startedAt = startedAt
+        self.originNanoseconds = originNanoseconds
+    }
     mutating func event(nanoseconds: UInt64, keyCode: UInt16, phase: KeyReplayEvent.Phase,
                         growthKeys: [String]) -> KeyReplayEvent? {
         guard keyCode <= 255, nanoseconds >= originNanoseconds,

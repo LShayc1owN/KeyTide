@@ -2,6 +2,14 @@ import XCTest
 @testable import KeytideCore
 
 final class PhysicalKeyMappingTests: XCTestCase {
+    func testPhysicalAndUnsupportedParticipationsSaturateAcrossChords() {
+        let result = PhysicalKeyMapping.map(["A": Int.max, "Cmd+A": 1,
+            "Key160": Int.max, "Cmd+Key160": 1])
+        XCTAssertEqual(result.counts["A"], Int.max)
+        XCTAssertEqual(result.counts["Cmd"], 2)
+        XCTAssertEqual(result.unsupported["Key160"], Int.max)
+    }
+
     func testMediaDisplayCombinesCountsWithoutChangingPhysicalMappingOrHistory() {
         let input = ["F2": 3, "BrightnessUp": 7, "VolumeUp": 4, "PlayPause": 2,
                      "PreviousTrack": 5, "Rewind": 1, "KeyboardBrightnessUp": 9, "Key160": 2]

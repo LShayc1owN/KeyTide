@@ -15,6 +15,7 @@ final class KeyReplayRecording {
     private let defaults: UserDefaults
     private let directoryOverride: URL?
     private let keyProvider: (() throws -> SymmetricKey)?
+    private let helper: HelperXPCClient
     private let queue = DispatchQueue(label: "Keytide.LocalReplay", qos: .utility)
     private let gate = NSLock()
     private var accepting = false
@@ -26,6 +27,7 @@ final class KeyReplayRecording {
     private var events: [KeyReplayEvent] = []
     private var pendingFlush: DispatchWorkItem?
     private var store: KeyReplayStore?
+    private var activeReplayRead: KeyReplayCancellation?
     private var observers: [NSObjectProtocol] = []
     private let dayFormatter: DateFormatter = {
         let value = DateFormatter(); value.calendar = Calendar(identifier: .gregorian)
@@ -39,8 +41,10 @@ final class KeyReplayRecording {
             .appendingPathComponent("Keytide/LocalReplay", isDirectory: true)
     }
 
-    init(defaults: UserDefaults = .standard, directory: URL? = nil, keyProvider: (() throws -> SymmetricKey)? = nil) {
+    init(defaults: UserDefaults = .standard, directory: URL? = nil, keyProvider: (() throws -> SymmetricKey)? = nil,
+         helper: HelperXPCClient = .shared) {
         self.defaults = defaults; directoryOverride = directory; self.keyProvider = keyProvider
+        self.helper = helper
     }
 
     func startObserving() {
@@ -52,7 +56,7 @@ final class KeyReplayRecording {
             default: break
             }
         })
-        HelperXPCClient.shared.addStateObserver { [weak self] state in
+        helper.addStateObserver { [weak self] state in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if case .connected(let version, let authorized) = state, authorized, self.isEnabled {
@@ -89,7 +93,7 @@ final class KeyReplayRecording {
         closeGate()
         statusKey = enabled ? "replay.recording.starting" : "replay.recording.off"; publish()
         guard enabled else {
-            HelperXPCClient.shared.setReplayRecordingEnabled(false) { _ in }
+            helper.setReplayRecordingEnabled(false) { _ in }
             return
         }
         gate.lock(); let token = epoch; gate.unlock()
@@ -100,14 +104,14 @@ final class KeyReplayRecording {
                 DispatchQueue.main.async {
                     self.configureHelperCapture(enabled: true, token: token)
                 }
-            } catch { DispatchQueue.main.async { self.stopAfterFailure() } }
+            } catch { DispatchQueue.main.async { self.stopAfterFailure(epoch: token) } }
         }
     }
 
     private func configureHelperCapture(enabled: Bool, token: Int) {
         gate.lock(); let current = epoch == token; gate.unlock()
         guard current, isEnabled else { return }
-        HelperXPCClient.shared.setReplayRecordingEnabled(enabled) { [weak self] ok in
+        helper.setReplayRecordingEnabled(enabled) { [weak self] ok in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gate.lock()
@@ -119,13 +123,15 @@ final class KeyReplayRecording {
                 self.gate.unlock()
                 guard current else { return }
                 if ok { self.statusKey = "replay.recording.on"; self.publish() }
-                else { self.stopAfterFailure() }
+                else { self.stopAfterFailure(epoch: token) }
             }
         }
     }
 
-    private func closeGate() {
+    @discardableResult
+    private func closeGate(ifEpoch token: Int? = nil) -> Bool {
         gate.lock(); defer { gate.unlock() }
+        if let token, epoch != token { return false }
         accepting = false; epoch += 1
         // Queue insertion shares the ingress lock: all accepted events precede
         // this flush, and all later events are refused before enqueueing.
@@ -134,6 +140,7 @@ final class KeyReplayRecording {
             do { try self.flush() } catch { /* Fail closed; no plaintext fallback. */ }
             self.session = nil; self.sessionDay = nil
         }
+        return true
     }
 
     /// Only called for authenticated Helper events with capture metadata. The
@@ -141,6 +148,7 @@ final class KeyReplayRecording {
     func receive(nanoseconds: UInt64, keyCode: UInt16, phase: KeyReplayEvent.Phase, growthKeys: [String]) {
         gate.lock(); defer { gate.unlock() }
         guard accepting, nanoseconds >= acceptsAfterNanoseconds else { return }
+        let token = epoch
         let received = Date()
         let age = max(0, ProcessInfo.processInfo.systemUptime - Double(nanoseconds) / 1_000_000_000)
         let occurred = received.addingTimeInterval(-age)
@@ -164,12 +172,12 @@ final class KeyReplayRecording {
                     let work = DispatchWorkItem { [weak self] in
                         guard let self else { return }
                         do { try self.flush() }
-                        catch { DispatchQueue.main.async { self.stopAfterFailure() } }
+                        catch { DispatchQueue.main.async { self.stopAfterFailure(epoch: token) } }
                     }
                     self.pendingFlush = work
                     self.queue.asyncAfter(deadline: .now() + 2, execute: work)
                 }
-            } catch { DispatchQueue.main.async { self.stopAfterFailure() } }
+            } catch { DispatchQueue.main.async { self.stopAfterFailure(epoch: token) } }
         }
     }
 
@@ -177,26 +185,39 @@ final class KeyReplayRecording {
     func captureInterrupted() {
         gate.lock(); defer { gate.unlock() }
         guard accepting else { return }
+        let token = epoch
         queue.async { [weak self] in
         guard let self else { return }
-        do { try self.flush() } catch { DispatchQueue.main.async { self.stopAfterFailure() } }
+        do { try self.flush() } catch { DispatchQueue.main.async { self.stopAfterFailure(epoch: token) } }
         self.session = nil; self.sessionDay = nil
     } }
 
-    func load(day: String, completion: @escaping (Result<KeyReplayDay, Error>) -> Void) {
+    @discardableResult
+    func load(day: String, completion: @escaping (Result<GrowthReplayPressPlan, Error>) -> Void) -> (() -> Void) {
+        activeReplayRead?.cancel()
+        let request = KeyReplayCancellation(); activeReplayRead = request
         queue.async { [weak self] in
-            guard let self else { return }
-            let result = Result { () -> KeyReplayDay in
+            guard let self, !request.isCancelled else { return }
+            do {
                 try self.flush()
-                // Merely opening Keyboard must not create a Keychain item.
-                guard FileManager.default.fileExists(atPath: self.directory.path) else { return .empty }
-                return try self.openStore().load(day: day)
+                guard !request.isCancelled else { return }
+                guard FileManager.default.fileExists(atPath: self.directory.path) else {
+                    DispatchQueue.main.async { if !request.isCancelled { completion(.success(GrowthReplayPressPlan(day: .empty))) } }
+                    return
+                }
+                // Only the file-length snapshot shares the writer queue. Decryption and
+                // preparation cannot hold up incoming recording batches.
+                let reader = try self.openStore().makeReader(day: day, cancellation: request)
+                reader.prepare(completion: completion)
+            } catch {
+                DispatchQueue.main.async { if !request.isCancelled { completion(.failure(error)) } }
             }
-            DispatchQueue.main.async { completion(result) }
         }
+        return { request.cancel() }
     }
 
     func deleteAll(completion: @escaping (Bool) -> Void) {
+        activeReplayRead?.cancel(); activeReplayRead = nil
         setEnabled(false)
         queue.async { [weak self] in
             guard let self else { return }
@@ -214,6 +235,7 @@ final class KeyReplayRecording {
     }
 
     func shutdown() {
+        activeReplayRead?.cancel(); activeReplayRead = nil
         gate.lock(); accepting = false; epoch += 1; gate.unlock()
         queue.sync { try? flush() }
     }
@@ -231,10 +253,10 @@ final class KeyReplayRecording {
         let value = try KeyReplayStore(directory: directory, key: key)
         store = value; return value
     }
-    private func stopAfterFailure() {
-        closeGate()
+    private func stopAfterFailure(epoch token: Int? = nil) {
+        guard closeGate(ifEpoch: token) else { return }
         defaults.set(false, forKey: preference)
-        HelperXPCClient.shared.setReplayRecordingEnabled(false) { _ in }
+        helper.setReplayRecordingEnabled(false) { _ in }
         statusKey = "replay.recording.unavailable"; publish()
     }
     private func publish() { NotificationCenter.default.post(name: .keyReplayRecordingChanged, object: nil) }

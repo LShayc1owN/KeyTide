@@ -2,6 +2,35 @@ import XCTest
 @testable import KeytideCore
 
 final class AppStatsTests: XCTestCase {
+    func testMiddleClickPersistsAndMissingLegacyFieldDefaultsToZero() throws {
+        var stats = AppStats(bundleId: "com.test.middle", displayName: "Middle")
+        stats.recordMiddleClick()
+        XCTAssertTrue(stats.hasActivity)
+        XCTAssertEqual(stats.totalClicks, 1)
+        XCTAssertEqual(stats.sideBackClicks, 0)
+        let encoded = try JSONEncoder().encode(stats)
+        let decoded = try JSONDecoder().decode(AppStats.self, from: encoded)
+        XCTAssertEqual(decoded.middleClicks, 1)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "middleClicks")
+        let old = try JSONDecoder().decode(AppStats.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(old.middleClicks, 0)
+    }
+
+    func testClickTotalsAndNewEventsSaturateAtIntegerLimit() {
+        var stats = AppStats(bundleId: "com.test.max", displayName: "Max")
+        stats.keyPresses = Int.max
+        stats.keyPressCounts = ["A": Int.max]
+        stats.leftClicks = Int.max
+        stats.rightClicks = Int.max
+        stats.middleClicks = Int.max
+        stats.recordKeyPress(keyName: "A")
+        stats.recordLeftClick(); stats.recordRightClick(); stats.recordMiddleClick()
+        XCTAssertEqual(stats.keyPresses, Int.max)
+        XCTAssertEqual(stats.keyPressCounts["A"], Int.max)
+        XCTAssertEqual(stats.totalClicks, Int.max)
+    }
+
     func testInitSetsExpectedDefaults() {
         let stats = AppStats(bundleId: "com.test.app", displayName: "Test App")
 

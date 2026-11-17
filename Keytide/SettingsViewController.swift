@@ -26,9 +26,8 @@ private final class SettingsDocumentView: NSView {
 
 private final class SettingsNavigationRow: NSTableRowView {
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
-    override func drawBackground(in dirtyRect: NSRect) {
-        guard isSelected else { return }
-        NSColor.systemBlue.withAlphaComponent(0.12).setFill()
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.controlAccentColor.withAlphaComponent(isEmphasized ? 0.18 : 0.12).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 7, yRadius: 7).fill()
     }
 }
@@ -91,6 +90,8 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
     private var cardViews: [NSView] = []
     private var dividerViews: [NSView] = []
     private var optionDividerViews: [NSView] = []
+    private let fileTransferQueue = DispatchQueue(label: "Keytide.SettingsFileTransfers", qos: .userInitiated)
+    private var fileTransferInProgress = false
     private var appearanceObservation: NSKeyValueObservation?
     private var systemThemeObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
@@ -306,7 +307,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
         navigation.backgroundColor = .clear
         navigation.rowHeight = 36
         navigation.intercellSpacing = NSSize(width: 0, height: 6)
-        navigation.selectionHighlightStyle = .none
+        navigation.selectionHighlightStyle = .regular
         navigation.allowsEmptySelection = false
         navigation.focusRingType = .none
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
@@ -1396,12 +1397,24 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
     }
 
     private func writeExport(to url: URL) {
-        do {
-            let data = try StatsManager.shared.exportStatsData()
-            try data.write(to: url, options: .atomic)
-        } catch {
-            showExportError(error)
+        guard !fileTransferInProgress else { return }
+        setFileTransferInProgress(true, importing: false)
+        let snapshot = StatsManager.shared.exportSnapshot()
+        fileTransferQueue.async { [weak self] in
+            let result = Result { try snapshot.encodedData().write(to: url, options: .atomic) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setFileTransferInProgress(false)
+                if case .failure(let error) = result { self.showExportError(error) }
+            }
         }
+    }
+
+    private func setFileTransferInProgress(_ inProgress: Bool, importing: Bool = false) {
+        fileTransferInProgress = inProgress
+        for button in [importButton, exportButton, resetButton] { button?.isEnabled = !inProgress }
+        importButton.title = NSLocalizedString(inProgress && importing ? "import.inProgress" : "button.importData", comment: "")
+        exportButton.title = NSLocalizedString(inProgress && !importing ? "export.inProgress" : "button.exportData", comment: "")
     }
 
     private func confirmAndImport(from url: URL) {
@@ -1481,13 +1494,23 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate, NSTab
     }
 
     private func performImport(from url: URL, mode: StatsManager.ImportMode) {
-        do {
-            let data = try Data(contentsOf: url)
-            try StatsManager.shared.importStatsData(from: data, mode: mode)
-            AppDelegate.trackEvent("stats_imported", properties: ["mode": mode == .overwrite ? "overwrite" : "merge"])
-            showImportSuccess(mode: mode)
-        } catch {
-            showImportError(error)
+        guard !fileTransferInProgress else { return }
+        setFileTransferInProgress(true, importing: true)
+        fileTransferQueue.async { [weak self] in
+            let result = Result { try StatsManager.prepareStatsImport(from: Data(contentsOf: url)) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let prepared):
+                    StatsManager.shared.applyPreparedImport(prepared, mode: mode)
+                    self.setFileTransferInProgress(false)
+                    AppDelegate.trackEvent("stats_imported", properties: ["mode": mode == .overwrite ? "overwrite" : "merge"])
+                    self.showImportSuccess(mode: mode)
+                case .failure(let error):
+                    self.setFileTransferInProgress(false)
+                    self.showImportError(error)
+                }
+            }
         }
     }
 

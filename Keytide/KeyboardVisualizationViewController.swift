@@ -31,6 +31,7 @@ final class KeyboardVisualizationViewController: NSViewController {
     private var replayCollapsed = false
     private var replayHeight: NSLayoutConstraint?
     private var prefersInteraction = false
+    private var resourcesReleased = false
     private var style: MenuUIStyle = .standard
     private var palette: KeyboardStudioPalette { KeyboardStudioPalette(style: style) }
     var onPageChanged: ((Bool) -> Void)?
@@ -489,24 +490,45 @@ final class KeyboardVisualizationViewController: NSViewController {
         viewportObservers.forEach(NotificationCenter.default.removeObserver)
         viewportObservers = []
         if let window = view.window {
-            for name in [NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification] {
+            for name in [NSWindow.didResignKeyNotification, NSWindow.didBecomeKeyNotification,
+                         NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                         NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
                 viewportObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                    self?.content.cancelGestures()
-                    if name == NSWindow.didResignKeyNotification { self?.trackpad.suspendRendering() }
-                    else { self?.trackpad.stop() }
-                    if name == NSWindow.willCloseNotification { self?.content.reset() }
+                    if name == NSWindow.didResignKeyNotification || name == NSWindow.didMiniaturizeNotification || name == NSWindow.willCloseNotification { self?.content.cancelGestures() }
+                    if name == NSWindow.willCloseNotification { self?.trackpad.setPresented(false) }
+                    else { self?.trackpad.refreshActivity() }
+                    if name == NSWindow.willCloseNotification { self?.releaseResourcesForClosedWindow() }
                 })
             }
         }
         viewportObservers.append(NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { [weak self] _ in
             self?.content.cancelGestures()
-            self?.trackpad.stop()
+            self?.trackpad.refreshActivity()
         })
+        trackpad.setPresented(showsTrackpad)
     }
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
-        trackpad.stop()
+        trackpad.suspendRendering()
+    }
+
+    private func releaseResourcesForClosedWindow() {
+        resourcesReleased = true
+        content.cancelGestures()
+        content.reset()
+        trackpad.setPresented(false)
+        growth.releaseResourcesForClosedWindow()
+        typingSelectionObservers.values.forEach(NotificationCenter.default.removeObserver)
+        typingSelectionObservers.removeAll()
+        // Break keyboard navigation links as well as the view hierarchy's ownership.
+        models.nextKeyView = nil
+        for surface in surfaces.values {
+            surface.cancel()
+            surface.nextKeyView = nil
+            surface.removeFromSuperview()
+        }
+        surfaces.removeAll()
     }
 
     private func layoutSurfaces() {
@@ -523,6 +545,10 @@ final class KeyboardVisualizationViewController: NSViewController {
 
     func refreshForPresentation(resetToToday: Bool) {
         _ = view
+        if resourcesReleased {
+            resourcesReleased = false
+            if !showsTrackpad { changeModel() }
+        }
         if showsTrackpad { trackpad.setPresented(true) }
         growth.setPresented(!growth.view.isHidden && !showsTrackpad)
         growth.refreshData(resetToToday: resetToToday)

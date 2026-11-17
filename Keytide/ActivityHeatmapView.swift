@@ -6,7 +6,7 @@ final class ActivityHeatmapView: NSView {
         let date: Date
         let keyPresses: Int
         let clicks: Int
-        var total: Int { keyPresses + clicks }
+        var total: Int { saturatingNonnegativeSum([keyPresses, clicks]) }
     }
 
     enum Metric: Int, CaseIterable {

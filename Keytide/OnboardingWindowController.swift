@@ -27,7 +27,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var setupRequested = false
     private var showingSetup: Bool
     private var didReceiveFirstInput = false
-    private var inputBaseline: Int?
+    private var inputBaseline: (date: Date, count: Int)?
     private var lastPresentation = ""
 
     var onRecheck: (() -> Void)?
@@ -303,16 +303,19 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func startObservingInput() {
         guard statsObserver == nil, !didReceiveFirstInput else { return }
         let initial = StatsManager.shared.displayCurrentStats()
-        inputBaseline = initial.keyPresses
+        inputBaseline = (initial.date, initial.keyPresses)
         statsObserver = StatsManager.shared.addStatsUpdateHandler { [weak self] in
             guard let self, self.window?.isVisible == true, self.ready else { return }
             let stats = StatsManager.shared.displayCurrentStats()
             let count = stats.keyPresses
             guard let baseline = self.inputBaseline else {
-                self.inputBaseline = count
+                self.inputBaseline = (stats.date, count)
                 return
             }
-            guard count > baseline else { return }
+            let sameDay = Calendar.current.isDate(stats.date, inSameDayAs: baseline.date)
+            let baselineCount = sameDay && count >= baseline.count ? baseline.count : 0
+            self.inputBaseline = (stats.date, baselineCount)
+            guard count > baselineCount else { return }
             self.didReceiveFirstInput = true
             self.firstPressLabel.stringValue = NSLocalizedString("welcome.firstReceived", comment: "")
             self.readySignal.playConfirmation()

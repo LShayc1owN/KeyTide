@@ -105,7 +105,8 @@ final class ActivityOverviewView: NSView {
                                                 width: bounds.width / CGFloat(days.count),
                                                 height: bounds.height), xRadius: 5, yRadius: 5).fill()
             }
-            let keyHeight = day.total > 0 ? rect.height * CGFloat(day.keyPresses) / CGFloat(day.total) : 0
+            let total = Double(day.keyPresses) + Double(day.clicks)
+            let keyHeight = total > 0 ? rect.height * CGFloat(Double(day.keyPresses) / total) : 0
             let clickHeight = rect.height - keyHeight
             let keyRect = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: keyHeight)
             let clickRect = NSRect(x: rect.minX, y: rect.maxY - clickHeight, width: rect.width, height: clickHeight)
@@ -113,7 +114,7 @@ final class ActivityOverviewView: NSView {
             NSGraphicsContext.current?.saveGraphicsState()
             let fullBar = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
             fullBar.addClip()
-            if day.total == 0 {
+            if total == 0 {
                 NSColor.separatorColor.setFill()
                 fullBar.fill()
             }
@@ -121,7 +122,7 @@ final class ActivityOverviewView: NSView {
                 NSColor(calibratedRed: 0.34, green: 0.65, blue: 0.94, alpha: 1).setFill()
                 NSBezierPath(rect: keyRect).fill()
             }
-            if day.total > 0, clickHeight > 0 {
+            if total > 0, clickHeight > 0 {
                 NSColor(calibratedRed: 0.94, green: 0.72, blue: 0.38, alpha: 1).setFill()
                 NSBezierPath(rect: clickRect).fill()
             }
@@ -429,7 +430,7 @@ final class ActivityMonthCalendarView: NSView {
         case 125: offset = 7
         case 126: offset = -7
         case 36, 76:
-            if let selectedDate { onOpenDay?(selectedDate) }
+            _ = accessibilityPerformPress()
             return
         case 48:
             if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
@@ -437,10 +438,22 @@ final class ActivityMonthCalendarView: NSView {
             return
         default: return super.keyDown(with: event)
         }
-        guard let date = calendar.date(byAdding: .day, value: offset, to: selectedDate ?? month),
-              let day = days.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) else { return }
+        guard let firstDay = days.first,
+              let firstMonth = calendar.dateInterval(of: .month, for: firstDay.date),
+              let date = calendar.date(byAdding: .day, value: offset, to: selectedDate ?? month),
+              date >= firstMonth.start,
+              date <= calendar.startOfDay(for: Date()) else { return }
+        let day = days.first { calendar.isDate($0.date, inSameDayAs: date) }
+            ?? ActivityHeatmapView.DayActivity(date: date, keyPresses: 0, clicks: 0)
         update(days: days, selectedDate: date)
         onSelectionChanged?(day)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard !days.isEmpty, let selectedDate, let onOpenDay,
+              selectedDate <= Calendar.current.startOfDay(for: Date()) else { return false }
+        onOpenDay(selectedDate)
+        return true
     }
 
     func update(days: [ActivityHeatmapView.DayActivity], selectedDate: Date?) {

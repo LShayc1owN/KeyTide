@@ -73,6 +73,47 @@ final class GrowthKeyboardTests: XCTestCase {
         XCTAssertEqual(single.snapshot.totalKeyPresses, 4)
     }
 
+    func testReplayProgressPublishesCurrentTotalWithoutASelectedKey() throws {
+        let (manager, _) = try manager(history: [:], current: day("2026-10-05", total: 7, counts: ["A": 7]))
+        let page = GrowthKeyboardViewController(manager: manager, startsIn3D: true)
+        page.showDay(date("2026-10-05"))
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        let spatial = try XCTUnwrap(all(page.view).compactMap { $0 as? GrowthKeyboard3DRenderer }.first)
+        XCTAssertNil(spatial.selectedKeyID)
+        var totals: [String] = [], coverage: [String] = []
+        page.onSummaryChanged = { total, _, note in totals.append(total); coverage.append(note) }
+        spatial.onReplayProgress?([.init(id: "A", count: 2)], 2)
+        XCTAssertEqual(totals, ["2"], "Publish after replacing the final-day total with replay progress")
+        XCTAssertEqual(coverage, [NSLocalizedString("replay.coverage", comment: "")])
+        XCTAssertFalse(spatial.hasScheduledRender)
+    }
+
+    func testExportRestoresPresentedSummaryAfterReplayProgress() throws {
+        let (manager, _) = try manager(history: [:], current: day("2026-10-05", total: 7, counts: ["A": 7]))
+        let page = GrowthKeyboardViewController(manager: manager, startsIn3D: true)
+        page.showDay(date("2026-10-05"))
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        let spatial = try XCTUnwrap(all(page.view).compactMap { $0 as? GrowthKeyboard3DRenderer }.first)
+        let presented = expectation(description: "Initial complete frame")
+        var fulfilled = false
+        page.onSummaryChanged = { total, _, _ in
+            if total == "7", !fulfilled { fulfilled = true; presented.fulfill() }
+        }
+        spatial.setActive(true)
+        wait(for: [presented], timeout: 10)
+        let baseline = try XCTUnwrap(page.exportCurrentImage())
+        var total = ""
+        page.onSummaryChanged = { value, _, _ in total = value }
+        spatial.onReplayProgress?([.init(id: "A", count: 2)], 2)
+        XCTAssertEqual(total, "2")
+        let exported = try XCTUnwrap(page.exportCurrentImage())
+        XCTAssertEqual(exported.summary, baseline.summary)
+        XCTAssertEqual(exported.coverage, baseline.coverage)
+        XCTAssertEqual(exported.image.tiffRepresentation, baseline.image.tiffRepresentation)
+        XCTAssertEqual(total, "7")
+        spatial.setActive(false)
+    }
+
     func testReturningToRangePreservesEarlierCumulativeCutoff() throws {
         let (manager, _) = try manager(history: ["2026-10-01": day("2026-10-01", total: 2, counts: ["A": 2])],
                                       current: day("2026-10-05", total: 3, counts: ["A": 3]))
@@ -155,6 +196,10 @@ final class GrowthKeyboardTests: XCTestCase {
         XCTAssertEqual(todayFrame.snapshot.totalKeyPresses, 3)
         XCTAssertEqual(todayFrame.snapshot.keyPressCounts, ["A": 3])
         XCTAssertEqual(frame.snapshot, manager.cumulativeKeyboardSnapshot(asOf: date("2026-10-05")))
+        XCTAssertEqual(presentation.snapshots, manager.cumulativeKeyboardTimeline())
+        XCTAssertEqual(presentation.period.firstTrackedDayKey, manager.keyboardTrackingPeriod()?.firstTrackedDayKey)
+        XCTAssertEqual(presentation.dailyUsage.map(\.dayKey), manager.keyboardDailyUsage().map(\.dayKey))
+        XCTAssertEqual(presentation.dailyUsage.map(\.keyPressCounts), manager.keyboardDailyUsage().map(\.keyPressCounts))
         XCTAssertEqual(try JSONDecoder().decode(DailyStats.self, from: XCTUnwrap(defaults.data(forKey: "dailyStats"))).keyPresses, 2)
         XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, before)
     }

@@ -21,11 +21,12 @@ struct TrackpadFrame: Codable {
 private typealias TrackpadCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?, Int32, Double, Int32) -> Void
 private enum TrackpadBridge {
     static let lock = NSLock()
-    static var receive: ((TrackpadFrame) -> Void)?
+    static var receive: ((TrackpadFrame, Double) -> Void)?
     // Keep the framework loaded until process exit: late private callbacks must
     // never return into unloaded code.
     static let library = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_NOW | RTLD_LOCAL)
     static let callback: TrackpadCallback = { _, data, count, time, ordinal in
+        let receivedAt = ProcessInfo.processInfo.systemUptime
         guard (0...32).contains(count), time.isFinite, time >= 0, count == 0 || data != nil else { return }
         var contacts: [TrackpadContact] = []
         for index in 0..<Int(count) {
@@ -42,13 +43,19 @@ private enum TrackpadBridge {
                 position: CGPoint(x: CGFloat(x), y: CGFloat(y)), rawPressure: pressure.isFinite ? pressure : nil))
         }
         lock.lock(); let handler = receive; lock.unlock()
-        handler?(TrackpadFrame(sourceTime: time, ordinal: ordinal, contacts: contacts))
+        handler?(TrackpadFrame(sourceTime: time, ordinal: ordinal, contacts: contacts), receivedAt)
     }
 }
 
 /// Bounded callback delivery. Overflow emits an empty boundary before the next
 /// frame. Raw surface positions never enter logs or aggregate statistics.
-final class TrackpadPreviewCapture {
+protocol TrackpadCapturing: AnyObject {
+    var onFrame: ((TrackpadFrame, Double) -> Void)? { get set }
+    func start() -> Bool
+    func stop()
+}
+
+final class TrackpadPreviewCapture: TrackpadCapturing {
     private typealias Create = @convention(c) () -> UnsafeMutableRawPointer?
     private typealias Register = @convention(c) (UnsafeMutableRawPointer, TrackpadCallback) -> Void
     private typealias Start = @convention(c) (UnsafeMutableRawPointer, Int32) -> Int32
@@ -57,11 +64,11 @@ final class TrackpadPreviewCapture {
     private var device: UnsafeMutableRawPointer?
     private var unregister: Register?, stopDevice: Stop?, releaseDevice: Release?
     private let lock = NSLock()
-    private var pending: [TrackpadFrame] = []
+    private var pending: [(frame: TrackpadFrame, receivedAt: Double)] = []
     private var scheduled = false
     private var generation = 0
     private var accepting = false
-    var onFrame: ((TrackpadFrame) -> Void)?
+    var onFrame: ((TrackpadFrame, Double) -> Void)?
     deinit { stop() }
 
     private func symbol<T>(_ name: String, _ type: T.Type) -> T? {
@@ -79,7 +86,7 @@ final class TrackpadPreviewCapture {
         TrackpadBridge.lock.lock()
         guard TrackpadBridge.receive == nil else { TrackpadBridge.lock.unlock(); return false }
         lock.lock(); generation &+= 1; let token = generation; lock.unlock()
-        TrackpadBridge.receive = { [weak self] frame in self?.enqueue(frame, generation: token) }
+        TrackpadBridge.receive = { [weak self] frame, receivedAt in self?.enqueue(frame, receivedAt: receivedAt, generation: token) }
         TrackpadBridge.lock.unlock()
         guard let device = create() else {
             TrackpadBridge.lock.lock(); TrackpadBridge.receive = nil; TrackpadBridge.lock.unlock()
@@ -98,13 +105,13 @@ final class TrackpadPreviewCapture {
         TrackpadBridge.lock.lock(); TrackpadBridge.receive = nil; TrackpadBridge.lock.unlock()
         unregister?(device, TrackpadBridge.callback); _ = stopDevice?(device); releaseDevice?(device)
     }
-    private func enqueue(_ frame: TrackpadFrame, generation token: Int) {
+    private func enqueue(_ frame: TrackpadFrame, receivedAt: Double, generation token: Int) {
         lock.lock()
         guard accepting, token == generation else { lock.unlock(); return }
         // Preserve every callback between UI deliveries, rather than dropping
         // all intermediate positions. Overflow starts a new visible segment.
-        if pending.count >= 256 { pending.removeAll(); pending.append(TrackpadFrame(sourceTime: frame.sourceTime, ordinal: frame.ordinal, contacts: [])) }
-        pending.append(frame)
+        if pending.count >= 256 { pending.removeAll(); pending.append((TrackpadFrame(sourceTime: frame.sourceTime, ordinal: frame.ordinal, contacts: []), receivedAt)) }
+        pending.append((frame, receivedAt))
         guard !scheduled else { lock.unlock(); return }
         scheduled = true
         lock.unlock()
@@ -114,7 +121,7 @@ final class TrackpadPreviewCapture {
             guard self.accepting, token == self.generation else { self.lock.unlock(); return }
             let values = self.pending; self.pending.removeAll(keepingCapacity: true); self.scheduled = false
             self.lock.unlock()
-            for value in values { self.onFrame?(value) }
+            for value in values { self.onFrame?(value.frame, value.receivedAt) }
         }
     }
 }
@@ -232,11 +239,13 @@ final class TrackpadStudioView: NSView {
     private var playback: DispatchWorkItem?
     private var replayGeneration = 0
     private var replayReader: TrackpadReplayReader?
+    private var replayLoad: TrackpadReplayLoad?
     private let status = NSTextField(wrappingLabelWithString: "")
     private let help = NSTextField(wrappingLabelWithString: "")
     private let haptics = NSButton(checkboxWithTitle: NSLocalizedString("trackpad.haptics", comment: ""), target: nil, action: nil)
-    private var running = false
-    private var visible = false
+    private var presented = false
+    private var deleting = false
+    private var workspaceSuspensions = Set<Notification.Name>()
     private var lastHaptic = -Double.infinity
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private func text(_ key: String) -> String { NSLocalizedString(key, comment: "Trackpad preview") }
@@ -268,19 +277,36 @@ final class TrackpadStudioView: NSView {
         ])
         ink.translatesAutoresizingMaskIntoConstraints = true
         service.onFrame = { [weak self] frame in
-            guard let self, self.playback == nil, self.visible, self.window?.isVisible == true, self.window?.occlusionState.contains(.visible) == true, !self.window!.isMiniaturized, NSApp.isActive else { return }
+            guard let self, self.playback == nil, self.canPreview else { return }
             self.ink.accept(frame)
-            self.status.stringValue = self.service.recording ? self.text("trackpad.recording") : String(format: self.text("trackpad.live"), frame.contacts.filter { $0.state == 3 || $0.state == 4 }.count, frame.sourceTime)
+            if self.service.failed || self.service.recording { self.updateRecordingUI() }
+            else { self.status.stringValue = String(format: self.text("trackpad.live"), frame.contacts.filter { $0.state == 3 || $0.state == 4 }.count, frame.sourceTime) }
         }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-            observers.append((center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.stop() }))
+            observers.append((center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.workspaceSuspensions.insert(name); self?.refreshActivity()
+            }))
+        }
+        for (name, suspension) in [(NSWorkspace.didWakeNotification, NSWorkspace.willSleepNotification),
+                                   (NSWorkspace.sessionDidBecomeActiveNotification, NSWorkspace.sessionDidResignActiveNotification)] {
+            observers.append((center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.workspaceSuspensions.remove(suspension); self?.refreshActivity()
+            }))
         }
         let nc = NotificationCenter.default
-        observers.append((nc, nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.ink.clear() }))
+        for name in [NSApplication.didResignActiveNotification, NSApplication.didBecomeActiveNotification,
+                     NSApplication.didHideNotification, NSApplication.didUnhideNotification,
+                     .NSCalendarDayChanged, .NSSystemClockDidChange, .NSSystemTimeZoneDidChange] {
+            observers.append((nc, nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshActivity() }))
+        }
+        observers.append((nc, nc.addObserver(forName: TrackpadRecording.didChange, object: nil, queue: .main) { [weak self] notification in
+            guard let self, notification.object as? TrackpadRecording === self.service else { return }
+            self.updateRecordingUI()
+        }))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { observers.forEach { $0.0.removeObserver($0.1) }; playback?.cancel(); replayReader?.cancel() }
+    deinit { observers.forEach { $0.0.removeObserver($0.1) }; playback?.cancel(); replayLoad?.cancel(); replayReader?.cancel() }
     override func layout() {
         super.layout()
         let bottom = status.frame.maxY + 8
@@ -290,13 +316,50 @@ final class TrackpadStudioView: NSView {
         ink.frame = NSRect(x: (bounds.width - width) / 2, y: bottom + (available - height) / 2,
                            width: width, height: height)
     }
-    func setPresented(_ value: Bool) { visible = value; service.preview = value; if !value { stop() } else { service.updateCapture(); toggle.state = service.recording ? .on : .off } }
-    func suspendRendering() { ink.clear() }
-    func stop() {
-        service.preview = false; service.updateCapture(); replayReader?.cancel(); replayReader = nil; replayGeneration += 1; playback?.cancel(); playback = nil; running = false; ink.clear()
-        toggle.state = service.recording ? .on : .off; status.stringValue = text(service.recording ? "trackpad.recording" : "trackpad.ready")
+    private var canPreview: Bool {
+        guard presented, !deleting, workspaceSuspensions.isEmpty, !isHiddenOrHasHiddenAncestor,
+              let window else { return false }
+        return window.isVisible && window.isKeyWindow && !window.isMiniaturized
+            && window.occlusionState.contains(.visible) && NSApp.isActive && !NSApp.isHidden
+    }
+    func setPresented(_ value: Bool) { presented = value; refreshActivity() }
+    func suspendRendering() {
+        cancelReplay(); ink.clear()
+        service.preview = false; service.updateCapture(); updateRecordingUI()
+    }
+    func refreshActivity() {
+        let now = Date()
+        day.maxDate = now
+        if day.dateValue > now { day.dateValue = now }
+        let active = canPreview
+        if !active { cancelReplay(); ink.clear() }
+        service.preview = active
+        service.updateCapture()
+        updateRecordingUI()
+    }
+    private func cancelReplay() {
+        replayGeneration += 1
+        replayLoad?.cancel(); replayLoad = nil
+        replayReader?.cancel(); replayReader = nil
+        playback?.cancel(); playback = nil
+    }
+    private func updateRecordingUI() {
+        toggle.state = service.recording ? .on : .off
+        toggle.isEnabled = !deleting; replay.isEnabled = !deleting; day.isEnabled = !deleting
+        let key: String
+        if service.failed { key = "trackpad.failed" }
+        else if playback != nil { key = "trackpad.replay" }
+        else if service.recording { key = "trackpad.recording" }
+        else { key = canPreview ? "trackpad.waiting" : "trackpad.ready" }
+        status.stringValue = text(key)
+    }
+    private func acceptsReplay(_ token: Int) -> Bool {
+        guard token == replayGeneration else { return false }
+        guard canPreview else { refreshActivity(); return false }
+        return true
     }
     @objc private func togglePreview() {
+        guard !deleting else { return }
         if service.recording { service.setRecording(false) }
         else {
             let alert = NSAlert(); alert.messageText = text("trackpad.record")
@@ -305,31 +368,43 @@ final class TrackpadStudioView: NSView {
             guard alert.runModal() == .alertFirstButtonReturn else { toggle.state = .off; return }
             service.setRecording(true)
         }
-        toggle.state = service.recording ? .on : .off
-        status.stringValue = text(service.failed ? "trackpad.failed" : service.recording ? "trackpad.recording" : "trackpad.ready")
+        updateRecordingUI()
     }
     @objc private func deleteRecords() {
+        guard !deleting else { return }
         let alert = NSAlert(); alert.messageText = text("trackpad.delete.confirm")
         alert.addButton(withTitle: text("trackpad.delete")); alert.addButton(withTitle: text("trackpad.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        stop(); service.deleteAll { [weak self] ok in self?.status.stringValue = self?.text(ok ? "trackpad.ready" : "trackpad.failed") ?? "" }
+        deleting = true; refreshActivity()
+        service.deleteAll { [weak self] ok in
+            guard let self else { return }
+            self.deleting = false; self.refreshActivity()
+            if !ok { self.status.stringValue = self.text("trackpad.failed") }
+        }
     }
     @objc private func playDay() {
-        replayReader?.cancel(); replayReader = nil; replayGeneration += 1; let token = replayGeneration
-        playback?.cancel(); playback = DispatchWorkItem {}; ink.clear()
-        service.load(day: day.dateValue) { [weak self] reader in
-            guard let self, token == self.replayGeneration, self.visible else { reader?.cancel(); return }
-            guard let reader else { self.playback = nil; self.status.stringValue = self.text("trackpad.replay.empty"); return }
+        guard canPreview else { return }
+        cancelReplay(); let token = replayGeneration
+        playback = DispatchWorkItem {}; ink.clear(); updateRecordingUI()
+        replayLoad = service.load(day: day.dateValue) { [weak self] reader in
+            guard let self, self.acceptsReplay(token) else { reader?.cancel(); return }
+            self.replayLoad = nil
+            guard let reader else {
+                self.playback = nil; self.updateRecordingUI()
+                if !self.service.failed { self.status.stringValue = self.text("trackpad.replay.empty") }
+                return
+            }
             self.replayReader = reader
             let start = ProcessInfo.processInfo.systemUptime
             func tick() {
-                guard token == self.replayGeneration, self.visible else { reader.cancel(); return }
+                guard self.acceptsReplay(token) else { reader.cancel(); return }
                 let elapsed = ProcessInfo.processInfo.systemUptime - start
                 reader.take(through: elapsed) { [weak self] frames, done, failed in
-                    guard let self, token == self.replayGeneration, self.visible else { reader.cancel(); return }
+                    guard let self, self.acceptsReplay(token) else { reader.cancel(); return }
                     for frame in frames { self.ink.accept(frame) }
                     if done || failed {
                         self.playback = nil; self.replayReader = nil
+                        self.updateRecordingUI()
                         if failed { self.status.stringValue = self.text("trackpad.failed") }
                         return
                     }
@@ -354,22 +429,28 @@ final class TrackpadStudioView: NSView {
 /// batches; the serial I/O queue also orders loads and deletion after writes.
 final class TrackpadRecording {
     static let shared = TrackpadRecording()
-    private let capture = TrackpadPreviewCapture()
+    static let didChange = Notification.Name("Keytide.trackpadRecordingChanged")
+    private let capture: TrackpadCapturing
+    private let defaults: UserDefaults
+    private let keyProvider: ((Bool) throws -> SymmetricKey)?
+    private let uptime: () -> Double
     private let queue = DispatchQueue(label: "Keytide.TrackpadRecords", qos: .utility)
     private let gate = NSLock()
     private var outstanding = 0
-    private var activeReader: TrackpadReplayReader?
+    private var activeLoad: TrackpadReplayLoad?
     private var batch: [TrackpadFrame] = []
     private var flushTask: DispatchWorkItem?
     private var key: SymmetricKey?
     private var session = UUID().uuidString
     private var chunk = 0
     private var recordingOrder = 0
+    private var recordingGeneration = 0
+    private var acceptsAfter: Double?
     private var batchDay = ""
-    private var suspended = false
+    private var workspaceSuspensions = Set<Notification.Name>()
     private var observers: [NSObjectProtocol] = []
     private let preference = "trackpad.recording.consent.v1"
-    private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keytide/TrackpadReplay")
+    private let directory: URL
     private(set) var recording = false
     private(set) var failed = false
     var preview = false
@@ -377,10 +458,16 @@ final class TrackpadRecording {
     private let formatter: DateFormatter = {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.dateFormat = "yyyy-MM-dd"; return f
     }()
-    private init() {
-        capture.onFrame = { [weak self] frame in
+    init(capture: TrackpadCapturing = TrackpadPreviewCapture(), defaults: UserDefaults = .standard,
+         directory: URL? = nil, keyProvider: ((Bool) throws -> SymmetricKey)? = nil,
+         uptime: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
+        self.capture = capture; self.defaults = defaults; self.keyProvider = keyProvider; self.uptime = uptime
+        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keytide/TrackpadReplay")
+        capture.onFrame = { [weak self] frame, receivedAt in
             guard let self else { return }
-            if self.recording {
+            // Callback receipt time is memory-only. A preview frame queued before
+            // consent must not become a recorded frame when main-thread delivery resumes.
+            if self.recording, let acceptsAfter = self.acceptsAfter, receivedAt >= acceptsAfter {
                 let day = self.formatter.string(from: Date())
                 if day != self.batchDay { self.flush(); self.batchDay = day }
                 guard self.recording else { return }
@@ -394,47 +481,62 @@ final class TrackpadRecording {
             if self.preview { self.onFrame?(frame) }
         }
     }
+    deinit { observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver); activeLoad?.cancel() }
     func startObserving() {
         guard observers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self else { return }; self.suspended = true; self.flush(); self.capture.stop()
+                guard let self else { return }
+                self.workspaceSuspensions.insert(name); self.flush(); self.capture.stop()
             })
         }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+        for (name, suspension) in [(NSWorkspace.didWakeNotification, NSWorkspace.willSleepNotification),
+                                   (NSWorkspace.sessionDidBecomeActiveNotification, NSWorkspace.sessionDidResignActiveNotification)] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self else { return }; self.suspended = false; if self.recording { self.setRecording(true) } else { self.updateCapture() }
+                guard let self else { return }
+                self.workspaceSuspensions.remove(suspension)
+                if self.workspaceSuspensions.isEmpty && self.recording { self.setRecording(true) }
+                else { self.updateCapture() }
             })
         }
-        if UserDefaults.standard.bool(forKey: preference) { setRecording(true) }
+        if defaults.bool(forKey: preference) { setRecording(true) }
     }
     func updateCapture() {
-        if !suspended && (preview || recording) {
+        if workspaceSuspensions.isEmpty && (preview || recording) {
             if !capture.start() { fail() }
         } else { capture.stop() }
     }
     func setRecording(_ enabled: Bool) {
-        flush(); recording = false
+        flush(); recording = false; acceptsAfter = nil
         if enabled {
-            do { key = try localKey(create: true); session = UUID().uuidString; chunk = 0; recordingOrder = UserDefaults.standard.integer(forKey: "trackpad.recording.order.v1") + 1; UserDefaults.standard.set(recordingOrder, forKey: "trackpad.recording.order.v1"); recording = true; failed = false }
-            catch { failed = true }
-        }
-        UserDefaults.standard.set(recording, forKey: preference)
+            recordingGeneration &+= 1
+            do {
+                key = try localKey(create: true); session = UUID().uuidString; chunk = 0
+                recordingOrder = defaults.integer(forKey: "trackpad.recording.order.v1") + 1
+                defaults.set(recordingOrder, forKey: "trackpad.recording.order.v1")
+                acceptsAfter = uptime(); recording = true; failed = false
+            } catch { fail(); return }
+        } else { failed = false }
+        defaults.set(recording, forKey: preference)
         updateCapture()
+        publish()
     }
     private func fail() {
-        recording = false; failed = true; batch.removeAll(); flushTask?.cancel(); flushTask = nil
-        UserDefaults.standard.set(false, forKey: preference)
+        recording = false; acceptsAfter = nil; failed = true; batch.removeAll(); flushTask?.cancel(); flushTask = nil
+        defaults.set(false, forKey: preference)
+        if !preview || !workspaceSuspensions.isEmpty { capture.stop() }
+        publish()
     }
-    func finish() { flush(); capture.stop(); queue.sync {} }
+    private func publish() { NotificationCenter.default.post(name: Self.didChange, object: self) }
+    func finish() { activeLoad?.cancel(); flush(); capture.stop(); queue.sync {} }
     private func flush() {
         flushTask?.cancel(); flushTask = nil
         guard !batch.isEmpty, let key else { return }
         gate.lock()
         guard outstanding < 8 else { gate.unlock(); fail(); return }
         outstanding += 1; gate.unlock()
-        let frames = batch; let order = recordingOrder; batch.removeAll(keepingCapacity: true)
+        let frames = batch; let token = recordingGeneration; batch.removeAll(keepingCapacity: true)
         let day = batchDay, filename = String(format: "%020d", recordingOrder) + "-" + session + String(format: "-%08d", chunk) + ".ktp"
         chunk += 1
         queue.async {
@@ -447,7 +549,7 @@ final class TrackpadRecording {
                 let file = folder.appendingPathComponent(filename)
                 try sealed.write(to: file, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            } catch { DispatchQueue.main.async { if self.recordingOrder == order { self.fail() } } }
+            } catch { DispatchQueue.main.async { if self.recordingGeneration == token { self.fail() } } }
         }
     }
     private func prepare(_ url: URL) throws {
@@ -455,36 +557,43 @@ final class TrackpadRecording {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var value = url; var flags = URLResourceValues(); flags.isExcludedFromBackup = true; try value.setResourceValues(flags)
     }
-    func load(day: Date, completion: @escaping (TrackpadReplayReader?) -> Void) {
+    @discardableResult
+    func load(day: Date, completion: @escaping (TrackpadReplayReader?) -> Void) -> TrackpadReplayLoad {
+        activeLoad?.cancel()
+        let request = TrackpadReplayLoad(); activeLoad = request
         flush(); let dayKey = formatter.string(from: day)
         // Snapshot file names after preceding writes, then decrypt on a separate
         // reader queue. A long replay scan must never starve live recording I/O.
         queue.async {
             do {
+                guard !request.isCancelled else { DispatchQueue.main.async { completion(nil) }; return }
                 let folder = self.directory.appendingPathComponent(dayKey)
                 guard FileManager.default.fileExists(atPath: folder.path) else { DispatchQueue.main.async { completion(nil) }; return }
                 guard try folder.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw CocoaError(.fileReadNoPermission) }
                 let key = try self.localKey(create: false)
                 let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
                     .filter { $0.pathExtension == "ktp" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-                self.activeReader?.cancel()
                 let reader = TrackpadReplayReader(files: files, key: key, day: dayKey)
-                self.activeReader = reader
-                reader.prepare { ok in completion(ok ? reader : nil) }
+                guard request.install(reader) else { DispatchQueue.main.async { completion(nil) }; return }
+                reader.prepare { ok in completion(ok && !request.isCancelled ? reader : nil) }
             } catch { DispatchQueue.main.async { completion(nil) } }
         }
+        return request
     }
     func deleteAll(completion: @escaping (Bool) -> Void) {
         setRecording(false)
+        // A write being deleted must not later overwrite the deletion result.
+        recordingGeneration &+= 1
+        activeLoad?.cancel(); activeLoad = nil
         queue.async {
             do {
-                self.activeReader?.cancel(); self.activeReader = nil
                 if FileManager.default.fileExists(atPath: self.directory.path) { try FileManager.default.removeItem(at: self.directory) }
                 DispatchQueue.main.async { completion(true) }
-            } catch { DispatchQueue.main.async { completion(false) } }
+            } catch { DispatchQueue.main.async { self.fail(); completion(false) } }
         }
     }
     private func localKey(create: Bool) throws -> SymmetricKey {
+        if let keyProvider { return try keyProvider(create) }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.xuanlprk.KeyTide.TrackpadReplay.v1", kSecAttrAccount as String: "encryption",
             kSecAttrSynchronizable as String: false, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
@@ -498,6 +607,24 @@ final class TrackpadRecording {
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
         return key
+    }
+}
+
+/// Cancellation is available before file enumeration or the first decryption.
+/// Installing the reader and cancelling share a lock so neither can miss the other.
+final class TrackpadReplayLoad {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var reader: TrackpadReplayReader?
+    fileprivate var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    fileprivate func install(_ reader: TrackpadReplayReader) -> Bool {
+        lock.lock()
+        guard !cancelled else { lock.unlock(); reader.cancel(); return false }
+        self.reader = reader; lock.unlock(); return true
+    }
+    func cancel() {
+        lock.lock(); cancelled = true; let reader = reader; self.reader = nil; lock.unlock()
+        reader?.cancel()
     }
 }
 

@@ -5,11 +5,21 @@ import Cocoa
 final class GrowthKeyboardViewController: NSViewController {
     private let loadPresentation: () -> GrowthKeyboardPresentation?
     private let startsIn3D: Bool
-    private let loadReplay: ((String, @escaping (Result<KeyReplayDay, Error>) -> Void) -> Void)?
+    private let loadReplay: ((String, @escaping (Result<GrowthReplayPressPlan, Error>) -> Void) -> (() -> Void))?
+    private var cancelReplayLoad: (() -> Void)?
     private let playback = GrowthPlaybackDriver()
     private var presentation: GrowthKeyboardPresentation?
     private var displayedKeyUsages: [GrowthKeyboardKeyUsage] = []
     private var displayedMediaCounts: [String: Int]? = [:]
+    private struct Presented3DState {
+        let frame: GrowthKeyboardFrame
+        let date: String
+        let total: String
+        let coverage: String
+        let metric: String
+        let scope: String
+    }
+    private var presented3DState: Presented3DState?
     private var selectionGeneration = 0
     private let renderer = EditorialKeyboardRenderer(frame: .zero)
     private var spatialRenderer: GrowthKeyboard3DRenderer?
@@ -62,7 +72,7 @@ final class GrowthKeyboardViewController: NSViewController {
     }()
 
     init(manager: StatsManager, startsIn3D: Bool = false,
-         loadReplay: ((String, @escaping (Result<KeyReplayDay, Error>) -> Void) -> Void)? = nil) {
+         loadReplay: ((String, @escaping (Result<GrowthReplayPressPlan, Error>) -> Void) -> (() -> Void))? = nil) {
         self.startsIn3D = startsIn3D
         self.loadReplay = loadReplay
         loadPresentation = { GrowthKeyboardPresentation.load(from: manager) }
@@ -254,6 +264,7 @@ final class GrowthKeyboardViewController: NSViewController {
         pausePlayback()
         let selected = shows3D ? renderer.selectedKeyID : spatialRenderer?.selectedKeyID
         if shows3D && spatialRenderer == nil {
+            presented3DState = nil
             let spatial: GrowthKeyboard3DRenderer
             if usesMechanical {
                 do {
@@ -274,6 +285,12 @@ final class GrowthKeyboardViewController: NSViewController {
             } else {
                 spatial = GrowthKeyboard3DRenderer(layout: renderer.sceneLayout,
                     usesTransparentCanvas: startsIn3D)
+            }
+            spatial.onReplayFailure = { [weak self] in
+                guard let self else { return }
+                self.pausePlayback(); self.renderSelection()
+                self.coverageLabel.stringValue = self.text("replay.unreadable")
+                self.notifySidebar()
             }
             spatial.onSelectionChanged = { [weak self] in self?.showKeyDetail($0) }
             installRenderer(spatial)
@@ -319,9 +336,22 @@ final class GrowthKeyboardViewController: NSViewController {
     func setPresented(_ presented: Bool) {
         isPresented = presented
         if !isViewLoaded { return }
+        if presented && shows3D && spatialRenderer == nil { changeDisplayMode() }
         bindWindow()
         updateActive()
         if !presented { renderer.clearHover() }
+    }
+
+    /// Closing releases GPU resources; temporary inactivity keeps the last complete frame.
+    func releaseResourcesForClosedWindow() {
+        isPresented = false
+        pausePlayback()
+        spatialRenderer?.setActive(false)
+        spatialRenderer?.removeFromSuperview()
+        spatialRenderer = nil
+        presented3DState = nil
+        presentation = nil
+        example = nil
     }
 
     private var isWindowActive: Bool {
@@ -336,7 +366,7 @@ final class GrowthKeyboardViewController: NSViewController {
         playback.stepInterval = shows3D ? 0.35 : 0.15
         playback.setActive(isWindowActive)
         spatialRenderer?.setActive(isWindowActive && shows3D)
-        if !isWindowActive { renderer.clearHover(); spatialRenderer?.clearHover() }
+        if !isWindowActive { cancelReplayLoad?(); cancelReplayLoad = nil; renderer.clearHover(); spatialRenderer?.clearHover() }
         updateControls()
     }
 
@@ -358,6 +388,7 @@ final class GrowthKeyboardViewController: NSViewController {
                     self.refreshData(resetToToday: false)
                 }
                 if name == NSWindow.didResignKeyNotification || name == NSWindow.willCloseNotification {
+                    self.cancelReplayLoad?(); self.cancelReplayLoad = nil
                     self.playback.setActive(false); self.spatialRenderer?.setActive(false)
                     self.renderer.clearHover(); self.updateControls()
                 } else { self.updateActive() }
@@ -372,6 +403,7 @@ final class GrowthKeyboardViewController: NSViewController {
                     self.updateActive()
                     if self.shows3D { self.renderSelection() }
                 } else {
+                    self.cancelReplayLoad?(); self.cancelReplayLoad = nil
                     self.playback.setActive(false); self.spatialRenderer?.setActive(false)
                     self.renderer.clearHover(); self.updateControls()
                 }
@@ -393,6 +425,7 @@ final class GrowthKeyboardViewController: NSViewController {
             realDateBeforeExample = nil
         }
         guard let presentation else {
+            presented3DState = nil
             renderer.apply([]); renderer.selectKey(nil)
             spatialRenderer?.apply([]); spatialRenderer?.selectKey(nil)
             displayedKeyUsages = []
@@ -426,6 +459,7 @@ final class GrowthKeyboardViewController: NSViewController {
     private func renderSelection() {
         guard let presentation else { updateControls(); return }
         selectionGeneration &+= 1
+        cancelReplayLoad?(); cancelReplayLoad = nil
         let selectionToken = selectionGeneration
         let frame: GrowthKeyboardFrame
         if usesTimeline {
@@ -437,7 +471,7 @@ final class GrowthKeyboardViewController: NSViewController {
         if shows3D {
             let offset = playback.state.offset, generation = playback.presentationGeneration
             let playing = playback.isPresentingPlaybackFrame
-            let apply: (KeyReplayDay) -> Void = { [weak self] day in
+            let apply: (GrowthReplayPressPlan) -> Void = { [weak self] plan in
                 guard let self, self.selectionGeneration == selectionToken,
                       self.playback.presentationGeneration == generation else { return }
                 let previous = self.usesTimeline && offset > 0 ? presentation.frame(at: offset - 1) : nil
@@ -452,38 +486,44 @@ final class GrowthKeyboardViewController: NSViewController {
                     self.coverageLabel.stringValue = self.text(self.isExample ? "replay.example.help" : "replay.coverage")
                     self.refreshSelectedKeyDetail()
                 }
+                let hasUnreadableChunks = plan.hasUnreadableChunks
+                let hasRecordedEvents = plan.hasEvents
                 self.spatialRenderer?.apply(frame.keyUsages, animated: playing,
                     replayFrom: playing ? from : nil,
-                    recordedReplay: playing ? GrowthReplayPressPlan(day: day) : nil) { [weak self] in
+                    recordedReplay: playing ? plan : nil) { [weak self] in
                     guard let self, self.shows3D, self.playback.state.offset == offset,
                           self.selectionGeneration == selectionToken else { return }
                     self.displayedKeyUsages = frame.keyUsages
                     self.displayedMediaCounts = frame.physical.mediaCounts
                     self.updateLabels(for: frame)
                     if playing && !self.isExample {
-                        self.coverageLabel.stringValue += " · " + self.text(day.hasUnreadableChunks ? "replay.unreadable" : day.entries.isEmpty ? "replay.noDetails" : "replay.coverage")
+                        self.coverageLabel.stringValue += " · " + self.text(hasUnreadableChunks ? "replay.unreadable" : !hasRecordedEvents ? "replay.noDetails" : "replay.coverage")
                     }
+                    self.presented3DState = Presented3DState(frame: frame,
+                        date: self.dateLabel.stringValue, total: self.totalLabel.stringValue,
+                        coverage: self.coverageLabel.stringValue, metric: self.metricTitle,
+                        scope: self.displayedScopeTitle)
                     self.refreshSelectedKeyDetail()
                     self.playback.framePresented(at: offset, generation: generation)
                     self.updateControls()
                 }
             }
             if playing, isExample {
-                apply(frame.dayKey == example?.recordedDayKey ? (example?.day ?? .empty) : .empty)
+                apply(GrowthReplayPressPlan(day: frame.dayKey == example?.recordedDayKey ? (example?.day ?? .empty) : .empty))
             } else if playing, let loadReplay {
                 coverageLabel.stringValue = text("replay.loading")
-                loadReplay(frame.dayKey) { [weak self] result in
+                cancelReplayLoad = loadReplay(frame.dayKey) { [weak self] result in
                     guard let self, self.isWindowActive, self.selectionGeneration == selectionToken,
                           self.playback.presentationGeneration == generation else { return }
                     switch result {
-                    case .success(let day): apply(day)
+                    case .success(let plan): apply(plan)
                     case .failure:
                         self.pausePlayback(); self.renderSelection()
                         self.coverageLabel.stringValue = self.text("replay.unreadable")
                         self.notifySidebar()
                     }
                 }
-            } else { apply(.empty) }
+            } else { apply(GrowthReplayPressPlan(day: .empty)) }
             updateControls()
         } else {
             renderer.apply(frame.keyUsages)
@@ -516,7 +556,7 @@ final class GrowthKeyboardViewController: NSViewController {
             rangeStart = interval.start
             datePicker.dateValue = interval.end
             rangeStartPicker.dateValue = interval.start
-            notifySidebar(); updateControls()
+            updateControls()
             return
         }
         displayedMetricTitle = text(isExample ? "replay.example.metric" : "growth.metric.caption")
@@ -530,7 +570,6 @@ final class GrowthKeyboardViewController: NSViewController {
         if frame.dayKey != frame.snapshot.dayKey { note += "  " + text("growth.noDailyRecord") }
         if isExample { note = text("replay.example.help") }
         set(coverageLabel, note)
-        notifySidebar()
         datePicker.dateValue = frame.date
         slider.integerValue = playback.state.offset
         updateControls()
@@ -539,13 +578,30 @@ final class GrowthKeyboardViewController: NSViewController {
     func exportCurrentImage() -> (image: NSImage, summary: String, coverage: String)? {
         pausePlayback()
         updateControls()
-        guard presentation != nil, shows3D, let image = spatialRenderer?.exportImage() else { return nil }
-        // These labels are committed by the same presentation acknowledgement as the image.
-        return (image, "\(dateLabel.stringValue) · \(totalLabel.stringValue) \(metricTitle)",
-                coverageLabel.stringValue)
+        guard presentation != nil, shows3D, let state = presented3DState,
+              let image = spatialRenderer?.exportImage() else {
+            renderSelection()
+            return nil
+        }
+        // Cancelling restores the renderer's last complete image. Restore its
+        // matching summary and details too, rather than exporting replay progress.
+        displayedKeyUsages = state.frame.keyUsages
+        displayedMediaCounts = state.frame.physical.mediaCounts
+        dateLabel.stringValue = state.date
+        totalLabel.stringValue = state.total
+        coverageLabel.stringValue = state.coverage
+        displayedMetricTitle = state.metric
+        displayedScopeTitle = state.scope
+        refreshSelectedKeyDetail()
+        // Export uses the last complete frame. Finish the currently requested
+        // date without replay so cancelling does not strand its controls and
+        // summary on different dates, or leave a cold first render cancelled.
+        renderSelection()
+        return (image, "\(state.date) · \(state.total) \(state.metric)", state.coverage)
     }
 
     private func pausePlayback() {
+        cancelReplayLoad?(); cancelReplayLoad = nil
         selectionGeneration &+= 1
         playback.pause()
         spatialRenderer?.cancelReplayAnimation()
@@ -709,7 +765,9 @@ final class GrowthKeyboardViewController: NSViewController {
 
     private func refreshSelectedKeyDetail() {
         let id = shows3D ? spatialRenderer?.selectedKeyID : renderer.selectedKeyID
-        showKeyDetail(id.flatMap { key in displayedKeyUsages.first { $0.id == key } })
+        let value = id.flatMap { key in displayedKeyUsages.first { $0.id == key } }
+        showKeyDetail(value)
+        if value == nil { notifySidebar() }
     }
     private func displayName(_ id: String) -> String {
         let names = ["LeftCmd", "RightCmd", "LeftShift", "RightShift", "LeftOption", "RightOption", "Ctrl",

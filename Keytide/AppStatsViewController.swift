@@ -21,6 +21,7 @@ final class AppStatsViewController: NSViewController, NSTableViewDataSource, NST
     private var rangeItems: [AppStats] = []
     private var visibleItems: [AppStats] = []
     private var appIconCache: [String: NSImage] = [:]
+    private var windowFocusObserver: NSObjectProtocol?
 
     private lazy var numberFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
@@ -47,6 +48,29 @@ final class AppStatsViewController: NSViewController, NSTableViewDataSource, NST
     override func viewWillAppear() {
         super.viewWillAppear()
         reloadRange(preserveScroll: true)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        stopObservingWindowFocus()
+        guard let window = view.window else { return }
+        windowFocusObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            self?.refreshData()
+        }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        stopObservingWindowFocus()
+    }
+
+    deinit { stopObservingWindowFocus() }
+
+    private func stopObservingWindowFocus() {
+        if let windowFocusObserver { NotificationCenter.default.removeObserver(windowFocusObserver) }
+        windowFocusObserver = nil
     }
 
     private func setupUI() {
@@ -245,9 +269,13 @@ final class AppStatsViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func updateSummary() {
-        keyMetric.setValue(formatNumber(rangeItems.reduce(0) { $0 + $1.keyPresses }))
-        clickMetric.setValue(formatNumber(rangeItems.reduce(0) { $0 + $1.totalClicks }))
-        scrollMetric.setValue(formatScrollDistance(rangeItems.reduce(0) { $0 + $1.scrollDistance }))
+        keyMetric.setValue(formatNumber(saturatingNonnegativeSum(rangeItems.map(\.keyPresses))))
+        clickMetric.setValue(formatNumber(saturatingNonnegativeSum(rangeItems.map(\.totalClicks))))
+        let scrollDistance = rangeItems.reduce(0.0) { total, app in
+            let sum = total + max(0, app.scrollDistance)
+            return sum.isFinite ? sum : Double.greatestFiniteMagnitude
+        }
+        scrollMetric.setValue(formatScrollDistance(scrollDistance))
     }
 
     private func applyFilter() {

@@ -108,6 +108,8 @@
 "update.notice.suppress" = "下次不再提示";
 "button.importData" = "数据导入";
 "button.exportData" = "数据导出";
+"import.inProgress" = "正在导入…";
+"export.inProgress" = "正在导出…";
 "button.quit" = "退出应用";
 
 "keyBreakdown.empty" = "暂无键位数据";
@@ -171,7 +173,7 @@
 "insights.peakDay" = "巅峰单日";
 "insights.dailyAvg" = "每日平均";
 "insights.clickRatio" = "点击占比";
-"insights.leftRight" = "左 : 右";
+"insights.leftRight" = "左 : 其它";
 "allTimeStats.mostActiveWeekday" = "效率巅峰";
 "allTimeStats.marathonMouse" = "鼠标长征";
 "allTimeStats.everestScroll" = "指尖攀登";

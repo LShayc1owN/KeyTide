@@ -89,22 +89,21 @@ final class AppActivityTracker {
 
     private func identityForPID(_ pid: pid_t) -> AppIdentity? {
         lock.lock()
+        defer { lock.unlock() }
         if let identity = identityCache.identity(forPID: pid) {
-            lock.unlock()
             return identity
         }
-        lock.unlock()
 
+        // Keep lookup and insertion atomic with termination invalidation. Otherwise
+        // a query in flight can restore a PID that its termination just removed.
         guard let app = NSRunningApplication(processIdentifier: pid),
               let bundleId = app.bundleIdentifier else {
             return nil
         }
         let name = app.localizedName ?? ""
 
-        lock.lock()
         identityCache.store(bundleId: bundleId, displayName: name, forPID: pid)
         let identity = AppIdentity(bundleId: bundleId, displayName: name)
-        lock.unlock()
         return identity
     }
 

@@ -49,6 +49,7 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
     private var background = NSColor.clear
     private var participated = 0
     private var completion: (() -> Void)?
+    var onFailure: (() -> Void)?
     var onProgress: (([GrowthKeyboardKeyUsage], Int) -> Void)?
     var onRects: (([String: CGRect]) -> Void)?
     private(set) var isAnimating = false
@@ -105,12 +106,29 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
         pending = nil
         guard isAnimating, !isHiddenOrHasHiddenAncestor else { cancel(); return }
         let elapsed = ProcessInfo.processInfo.systemUptime - began
+        if let stream = plan.stream {
+            let token = generation
+            stream.take(through: elapsed) { [weak self] slice in
+                guard let self, self.generation == token, self.isAnimating else { return }
+                if slice.failed { self.cancel(); self.onFailure?(); return }
+                self.consume(slice.entries, elapsed: elapsed, nextSeconds: slice.nextSeconds,
+                    nextStartsSession: slice.nextStartsSession)
+            }
+        } else {
+            let start = cursor
+            while cursor < plan.entries.count && elapsed >= plan.entries[cursor].seconds { cursor += 1 }
+            let next = cursor < plan.entries.count ? plan.entries[cursor] : nil
+            consume(Array(plan.entries[start..<cursor]), elapsed: elapsed,
+                nextSeconds: next?.seconds, nextStartsSession: next?.startsSession ?? false)
+        }
+    }
+    private func consume(_ entries: [KeyReplayDay.Entry], elapsed: Double,
+                         nextSeconds: Double?, nextStartsSession: Bool) {
         var changed = false
         var additions: [String: Int] = [:]
         let attack = min(0.055, scene.profile.duration / 3)
         let release = min(0.13, scene.profile.duration * 0.6)
-        while cursor < plan.entries.count && elapsed >= plan.entries[cursor].seconds {
-            let item = plan.entries[cursor]
+        for item in entries {
             if item.startsSession { held.removeAll(); released.removeAll(); offsets = [:] }
             let event = item.event
             if let id = MechanicalKeyboardView.physicalKeyID(event.keyCode), supported.contains(id) {
@@ -138,7 +156,6 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
                 for id in Set(event.growthKeys) { additions[id, default: 0] += 1 }
                 changed = true
             }
-            cursor += 1
         }
         var moving = false
         offsets = [:]
@@ -163,7 +180,7 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
             scene.prepare(values, background); onProgress?(values, participated)
         }
         // Missing key-up at the end of an interrupted capture is released here.
-        if (cursor == plan.entries.count || plan.entries[cursor].startsSession) && !held.isEmpty {
+        if (nextSeconds == nil || nextStartsSession) && !held.isEmpty {
             for (id, _) in held {
                 let minimum = plan.isAccelerated ? scene.profile.travel * 0.65 : 0
                 released[id] = (elapsed, max(minimum, offsets[id] ?? scene.profile.travel))
@@ -171,11 +188,12 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
             held.removeAll(); moving = true
         }
         metal.draw()
-        guard cursor < plan.entries.count || moving else {
+        guard nextSeconds != nil || moving else {
             isAnimating = false
+            releaseReplayData()
             let finish = completion; completion = nil; finish?(); return
         }
-        let untilNext = cursor < plan.entries.count ? max(0, plan.entries[cursor].seconds - elapsed) : 1.0 / 60
+        let untilNext = nextSeconds.map { max(0, $0 - elapsed) } ?? 1.0 / 60
         // Compressed events may be microseconds apart. Consume them together at
         // the next display frame instead of scheduling a draw for each event.
         let delay = moving ? 1.0 / 60 : max(1.0 / 60, untilNext)
@@ -201,6 +219,15 @@ final class GrowthReplayPressSurface: NSView, MTKViewDelegate {
         generation += 1; pending?.cancel(); pending = nil
         held.removeAll(); released.removeAll(); offsets = [:]
         completion = nil; isAnimating = false; cursor = 0
+        releaseReplayData()
         scene.reset(); isHidden = true
+    }
+
+    private func releaseReplayData() {
+        plan.stream?.cancel()
+        plan = GrowthReplayPressPlan(day: .empty)
+        values = []
+        target = [:]
+        cursor = 0
     }
 }

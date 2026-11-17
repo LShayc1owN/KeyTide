@@ -121,10 +121,19 @@ final class GrowthPlaybackDriver {
 struct GrowthReplayPressPlan {
     let entries: [KeyReplayDay.Entry]
     let isAccelerated: Bool
+    let stream: KeyReplayStream?
+    let hasUnreadableChunks: Bool
+    var hasEvents: Bool { stream.map { $0.eventCount > 0 } ?? !entries.isEmpty }
+
+    init(stream: KeyReplayStream) {
+        self.stream = stream; entries = []; isAccelerated = stream.isAccelerated
+        hasUnreadableChunks = stream.hasUnreadableChunks
+    }
     static let maximumDaySeconds = 8.0
     static let maximumGapSeconds = 0.12
 
     init(day: KeyReplayDay) {
+        stream = nil; hasUnreadableChunks = day.hasUnreadableChunks
         var previous = day.entries.first?.seconds ?? 0
         var time = 0.0
         let clipped = day.entries.map { entry -> KeyReplayDay.Entry in
@@ -139,6 +148,6 @@ struct GrowthReplayPressPlan {
     }
     var ids: [String] { entries.filter { $0.event.phase != .up }.compactMap { MechanicalKeyboardView.physicalKeyID($0.event.keyCode) } }
     func duration(profile: MechanicalPressProfile) -> Double {
-        (entries.last?.seconds ?? 0) + (entries.isEmpty ? 0 : profile.duration)
+        (stream?.duration ?? entries.last?.seconds ?? 0) + (hasEvents ? profile.duration : 0)
     }
 }

@@ -49,7 +49,10 @@ final class GrowthKeyboard3DRenderer: NSView {
     private struct CachedFrame {
         let key: CacheKey
         let frame: GrowthKeyboard3DFrame
+        let byteCost: Int
     }
+    private let cacheByteLimit: Int
+    var cachedByteCount: Int { cache.reduce(0) { $0 + $1.byteCost } }
     let sceneLayout: EditorialKeyboardSceneLayout
     private let renderFrame: RenderFrame?
     private let renderDetailedFrame: (([GrowthKeyboardKeyUsage], NSColor, CGFloat) -> GrowthKeyboard3DFrame)?
@@ -89,6 +92,7 @@ final class GrowthKeyboard3DRenderer: NSView {
     var cachedFrameCount: Int { cache.count }
     var hasScheduledRender: Bool { cancelPending != nil }
     var onSelectionChanged: ((GrowthKeyboardKeyUsage?) -> Void)?
+    var onReplayFailure: (() -> Void)?
     var onReplayProgress: (([GrowthKeyboardKeyUsage], Int) -> Void)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -100,7 +104,9 @@ final class GrowthKeyboard3DRenderer: NSView {
          replaySceneFactory: (() -> GrowthReplayPressScene)? = nil,
          replayPress: ReplayPress? = nil,
          reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+         cacheByteLimit: Int = 48 * 1024 * 1024,
          schedule: @escaping Schedule = GrowthKeyboard3DRenderer.scheduleOnMain) {
+        self.cacheByteLimit = max(0, cacheByteLimit)
         sceneLayout = layout
         self.renderFrame = renderFrame
         self.renderDetailedFrame = renderDetailedFrame
@@ -139,6 +145,7 @@ final class GrowthKeyboard3DRenderer: NSView {
                recordedReplay: GrowthReplayPressPlan? = nil, onPresented: (() -> Void)? = nil) {
         cancelRender()
         self.replayFrom = replayFrom
+        self.recordedReplay?.stream?.cancel()
         self.recordedReplay = recordedReplay
         let byID = Dictionary(uniqueKeysWithValues: incoming.map { ($0.id, $0) })
         requestedValues = sceneLayout.keys.map { byID[$0.id] ?? .init(id: $0.id, count: 0) }
@@ -155,6 +162,7 @@ final class GrowthKeyboard3DRenderer: NSView {
             // Keep the latest snapshot acknowledgement for reactivation. Cancelling
             // work must not leave its date/details behind when that image resumes.
             replayFrom = nil
+            recordedReplay?.stream?.cancel()
             recordedReplay = nil
             cancelRender()
             layer?.removeAnimation(forKey: "growthReplayFrame")
@@ -180,6 +188,7 @@ final class GrowthKeyboard3DRenderer: NSView {
 
     func cancelReplayAnimation() {
         replayFrom = nil
+        recordedReplay?.stream?.cancel()
         recordedReplay = nil
         cancelRender()
         layer?.removeAnimation(forKey: kCATransition)
@@ -190,8 +199,9 @@ final class GrowthKeyboard3DRenderer: NSView {
         let background = usesTransparentCanvas ? NSColor.clear
             : KeyboardVisualizationCanvasView.backgroundColor(for: effectiveAppearance, showsGrowth: true)
         let key = CacheKey(values: requestedValues, background: background, pixelScale: snapshotPixelScale)
+        cache.removeAll { $0.key.pixelScale != key.pixelScale }
         cancelRender()
-        guard key != currentKey || recordedReplay?.entries.isEmpty == false else { completePresentation(); return }
+        guard key != currentKey || recordedReplay?.hasEvents == true else { completePresentation(); return }
         if let index = cache.firstIndex(where: { $0.key == key }) {
             let cached = cache.remove(at: index)
             cache.append(cached)
@@ -212,15 +222,25 @@ final class GrowthKeyboard3DRenderer: NSView {
                 frame = self.scene!.render(values: key.values, backgroundColor: key.background, pixelScale: key.pixelScale)
             }
             self.renderCount += 1
-            self.cache.append(CachedFrame(key: key, frame: frame))
-            if self.cache.count > 3 { self.cache.removeFirst() }
+            let estimated = ceil(self.imageSize.width * key.pixelScale) * ceil(self.imageSize.height * key.pixelScale) * 4
+            let bitmapBytes = frame.image.representations.compactMap { $0 as? NSBitmapImageRep }
+                .reduce(0.0) { $0 + Double($1.bytesPerRow) * Double($1.pixelsHigh) }
+            let bytes = max(Double(estimated), bitmapBytes)
+            // An oversized frame may be displayed, but is never retained in the LRU.
+            if bytes.isFinite && bytes <= Double(self.cacheByteLimit) && bytes < Double(Int.max) {
+                let cost = Int(bytes)
+                while !self.cache.isEmpty && (self.cache.count >= 3 || self.cachedByteCount > self.cacheByteLimit - cost) {
+                    self.cache.removeFirst()
+                }
+                self.cache.append(CachedFrame(key: key, frame: frame, byteCost: cost))
+            }
             self.presentAfterPress(frame, key: key)
         }
     }
 
     private func presentAfterPress(_ frame: GrowthKeyboard3DFrame, key: CacheKey) {
-        guard let from = replayFrom, let plan = recordedReplay, !plan.entries.isEmpty, animatesPresentation,
-              !reduceMotion() else {
+        guard let from = replayFrom, let plan = recordedReplay, plan.hasEvents, animatesPresentation,
+              plan.stream?.cancellation.isCancelled != true, !reduceMotion() else {
             present(frame, key: key); return
         }
         let token = generation
@@ -247,6 +267,7 @@ final class GrowthKeyboard3DRenderer: NSView {
                 }
                 let surface = GrowthReplayPressSurface(scene: backend, size: imageSize,
                     supported: Set(sceneLayout.keys.map(\.id)))
+                surface.onFailure = { [weak self] in self?.onReplayFailure?() }
                 surface.onRects = { [weak self] rects in self?.pressRects = rects; self?.updateOverlay() }
                 surface.onProgress = { [weak self] values, events in
                     guard let self else { return }
@@ -272,6 +293,7 @@ final class GrowthKeyboard3DRenderer: NSView {
             layer?.add(transition, forKey: "growthReplayFrame")
         }
         replayFrom = nil
+        recordedReplay?.stream?.cancel()
         recordedReplay = nil
         values = key.values
         displayedFrame = frame; currentKey = key

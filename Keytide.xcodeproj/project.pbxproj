@@ -7,14 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		E10000F2 /* TrackpadThirdPartyNotices.md in Resources */ = {isa = PBXBuildFile; fileRef = E20000F2 /* TrackpadThirdPartyNotices.md */; };
-		E10000F1 /* TrackpadStudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000F1 /* TrackpadStudioView.swift */; };
-        F11000A6 /* KeyReplayRecording.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A6 /* KeyReplayRecording.swift */; };
-        F11000A5 /* KeyReplayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A5 /* KeyReplayStore.swift */; };
-        F11000A4 /* GrowthReplayPressSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A4 /* GrowthReplayPressSurface.swift */; };
-        F11000A3 /* OnboardingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A3 /* OnboardingProgress.swift */; };
-        F11000A2 /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A2 /* OnboardingWindowController.swift */; };
-        F11000A1 /* ReleaseReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A1 /* ReleaseReadiness.swift */; };
 		941ADB172F18D1AE00B2D578 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 941ADB162F18D1AE00B2D578 /* PostHog */; };
 		941ADB182F18D1AE00B2D578 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 941ADB1A2F18D1AE00B2D578 /* Sparkle */; };
 		9479D3FC2F9B67480083A75E /* KeytideHelper.app in Embed Helper */ = {isa = PBXBuildFile; fileRef = 9479D3D62F9B66190083A75E /* KeytideHelper.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -81,11 +73,19 @@
 		D10000B2 /* MechanicalKeyboardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000B2 /* MechanicalKeyboardGeometry.swift */; };
 		D10000B3 /* MechanicalKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000B3 /* MechanicalKeyboardView.swift */; };
 		D10000B4 /* MechanicalKeyboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000B4 /* MechanicalKeyboardWindowController.swift */; };
+		E10000F1 /* TrackpadStudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000F1 /* TrackpadStudioView.swift */; };
+		E10000F2 /* TrackpadThirdPartyNotices.md in Resources */ = {isa = PBXBuildFile; fileRef = E20000F2 /* TrackpadThirdPartyNotices.md */; };
 		E10000P1 /* TypingPulseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000P1 /* TypingPulseView.swift */; };
 		E10000P2 /* GeekStatsPopoverViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000P2 /* GeekStatsPopoverViewController.swift */; };
 		E10000P3 /* GeekTypingPulseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000P3 /* GeekTypingPulseView.swift */; };
 		E10000P4 /* MenuUIStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000P4 /* MenuUIStyle.swift */; };
 		E11000F1 /* Design/Keytide-Icon-v1/Keytide.icon in Resources */ = {isa = PBXBuildFile; fileRef = E21000F1 /* Design/Keytide-Icon-v1/Keytide.icon */; };
+		F11000A1 /* ReleaseReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A1 /* ReleaseReadiness.swift */; };
+		F11000A2 /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A2 /* OnboardingWindowController.swift */; };
+		F11000A3 /* OnboardingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A3 /* OnboardingProgress.swift */; };
+		F11000A4 /* GrowthReplayPressSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A4 /* GrowthReplayPressSurface.swift */; };
+		F11000A5 /* KeyReplayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A5 /* KeyReplayStore.swift */; };
+		F11000A6 /* KeyReplayRecording.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21000A6 /* KeyReplayRecording.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -113,14 +113,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		E20000F2 /* TrackpadThirdPartyNotices.md */ = {isa = PBXFileReference; lastKnownFileType = text; name = TrackpadThirdPartyNotices.md; path = "scripts/trackpad-probe/THIRD_PARTY_NOTICES.md"; sourceTree = SOURCE_ROOT; };
-		E20000F1 /* TrackpadStudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackpadStudioView.swift; sourceTree = "<group>"; };
-        F21000A6 /* KeyReplayRecording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyReplayRecording.swift; sourceTree = "<group>"; };
-        F21000A5 /* KeyReplayStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyReplayStore.swift; sourceTree = "<group>"; };
-        F21000A4 /* GrowthReplayPressSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrowthReplayPressSurface.swift; sourceTree = "<group>"; };
-        F21000A3 /* OnboardingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingProgress.swift; sourceTree = "<group>"; };
-        F21000A2 /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
-        F21000A1 /* ReleaseReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseReadiness.swift; sourceTree = "<group>"; };
 		9479D3D62F9B66190083A75E /* KeytideHelper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KeytideHelper.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A20000A /* HelperSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperSupervisor.swift; sourceTree = "<group>"; };
 		9A20000B /* HelperXPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperXPCClient.swift; sourceTree = "<group>"; };
@@ -190,11 +182,19 @@
 		D20000B2 /* MechanicalKeyboardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MechanicalKeyboardGeometry.swift; sourceTree = "<group>"; };
 		D20000B3 /* MechanicalKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MechanicalKeyboardView.swift; sourceTree = "<group>"; };
 		D20000B4 /* MechanicalKeyboardWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MechanicalKeyboardWindowController.swift; sourceTree = "<group>"; };
+		E20000F1 /* TrackpadStudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackpadStudioView.swift; sourceTree = "<group>"; };
+		E20000F2 /* TrackpadThirdPartyNotices.md */ = {isa = PBXFileReference; lastKnownFileType = text; name = TrackpadThirdPartyNotices.md; path = "scripts/trackpad-probe/THIRD_PARTY_NOTICES.md"; sourceTree = SOURCE_ROOT; };
 		E20000P1 /* TypingPulseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPulseView.swift; sourceTree = "<group>"; };
 		E20000P2 /* GeekStatsPopoverViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeekStatsPopoverViewController.swift; sourceTree = "<group>"; };
 		E20000P3 /* GeekTypingPulseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeekTypingPulseView.swift; sourceTree = "<group>"; };
 		E20000P4 /* MenuUIStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuUIStyle.swift; sourceTree = "<group>"; };
 		E21000F1 /* Design/Keytide-Icon-v1/Keytide.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = "Design/Keytide-Icon-v1/Keytide.icon"; sourceTree = SOURCE_ROOT; };
+		F21000A1 /* ReleaseReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseReadiness.swift; sourceTree = "<group>"; };
+		F21000A2 /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
+		F21000A3 /* OnboardingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingProgress.swift; sourceTree = "<group>"; };
+		F21000A4 /* GrowthReplayPressSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrowthReplayPressSurface.swift; sourceTree = "<group>"; };
+		F21000A5 /* KeyReplayStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyReplayStore.swift; sourceTree = "<group>"; };
+		F21000A6 /* KeyReplayRecording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyReplayRecording.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -290,12 +290,12 @@
 				B2000094 /* AppDetailView.swift */,
 				B2000092 /* AppKeyBreakdown.swift */,
 				9A20000A /* HelperSupervisor.swift */,
-                F21000A1 /* ReleaseReadiness.swift */,
-                F21000A5 /* KeyReplayStore.swift */,
-                F21000A6 /* KeyReplayRecording.swift */,
-                F21000A4 /* GrowthReplayPressSurface.swift */,
-                F21000A3 /* OnboardingProgress.swift */,
-                F21000A2 /* OnboardingWindowController.swift */,
+				F21000A1 /* ReleaseReadiness.swift */,
+				F21000A5 /* KeyReplayStore.swift */,
+				F21000A6 /* KeyReplayRecording.swift */,
+				F21000A4 /* GrowthReplayPressSurface.swift */,
+				F21000A3 /* OnboardingProgress.swift */,
+				F21000A2 /* OnboardingWindowController.swift */,
 				9A20000B /* HelperXPCClient.swift */,
 				9A20000C /* RemoteEventProcessor.swift */,
 				9A20000D /* HelperMigrationPresenter.swift */,
@@ -483,12 +483,12 @@
 				B10000A7 /* GrowthKeyboard3DGeometry.swift in Sources */,
 				A1000035 /* AnalyticsManager.swift in Sources */,
 				9A10000A /* HelperSupervisor.swift in Sources */,
-                F11000A1 /* ReleaseReadiness.swift in Sources */,
-                F11000A5 /* KeyReplayStore.swift in Sources */,
-                F11000A6 /* KeyReplayRecording.swift in Sources */,
-                F11000A4 /* GrowthReplayPressSurface.swift in Sources */,
-                F11000A3 /* OnboardingProgress.swift in Sources */,
-                F11000A2 /* OnboardingWindowController.swift in Sources */,
+				F11000A1 /* ReleaseReadiness.swift in Sources */,
+				F11000A5 /* KeyReplayStore.swift in Sources */,
+				F11000A6 /* KeyReplayRecording.swift in Sources */,
+				F11000A4 /* GrowthReplayPressSurface.swift in Sources */,
+				F11000A3 /* OnboardingProgress.swift in Sources */,
+				F11000A2 /* OnboardingWindowController.swift in Sources */,
 				9A10000B /* HelperXPCClient.swift in Sources */,
 				9A10000C /* RemoteEventProcessor.swift in Sources */,
 				9A10000D /* HelperMigrationPresenter.swift in Sources */,
@@ -580,7 +580,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = GMLVASTPGG;
+				DEVELOPMENT_TEAM = 3839Y9532A;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -756,7 +756,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 51;
-				DEVELOPMENT_TEAM = GMLVASTPGG;
+				DEVELOPMENT_TEAM = 3839Y9532A;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Keytide/Info.plist;
@@ -784,7 +784,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 51;
-				DEVELOPMENT_TEAM = GMLVASTPGG;
+				DEVELOPMENT_TEAM = 3839Y9532A;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Keytide/Info.plist;

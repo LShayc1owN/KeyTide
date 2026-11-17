@@ -3,6 +3,81 @@ import CryptoKit
 @testable import KeytideCore
 
 final class KeyReplayTests: XCTestCase {
+    private func prepared(_ reader: KeyReplayStream) throws -> GrowthReplayPressPlan {
+        let ready = expectation(description: "Prepared bounded reader")
+        var result: Result<GrowthReplayPressPlan, Error>?
+        reader.prepare { result = $0; ready.fulfill() }
+        wait(for: [ready], timeout: 10)
+        return try XCTUnwrap(result).get()
+    }
+
+    func testStreamMatchesLegacyPlanAcrossChunksSessionsAndClockRollback() throws {
+        let store = try KeyReplayStore(directory: directory(), key: SymmetricKey(size: .bits256))
+        for sessionIndex in 0..<2 {
+            let id = UUID(), start = Date(timeIntervalSince1970: sessionIndex == 0 ? 200 : 100)
+            for base in stride(from: 0, to: 4096, by: 128) {
+                let events: [KeyReplayEvent] = (base..<base + 128).map { i in
+                    let phase: KeyReplayEvent.Phase = i % 2 == 0 ? .down : .up
+                    let keys: [String] = i % 2 == 0 ? ["A"] : []
+                    return KeyReplayEvent(milliseconds: UInt64(i) * 200, ordinal: UInt64(i), keyCode: 0,
+                        phase: phase, growthKeys: keys)
+                }
+                try store.append(.init(version: 1, session: id, startedAt: start, events: events,
+                    recordingOrder: UInt64(sessionIndex + 1)), day: "2026-11-15")
+            }
+        }
+        let expected = GrowthReplayPressPlan(day: try store.load(day: "2026-11-15"))
+        let reader = try store.makeReader(day: "2026-11-15")
+        let plan = try prepared(reader)
+        XCTAssertTrue(plan.entries.isEmpty, "Production plan does not retain the entire day")
+        XCTAssertEqual(reader.eventCount, expected.entries.count)
+        XCTAssertEqual(plan.isAccelerated, expected.isAccelerated)
+        var received: [KeyReplayDay.Entry] = [], done = false
+        while !done {
+            let delivered = expectation(description: "Bounded slice")
+            reader.take(through: .greatestFiniteMagnitude) { slice in
+                XCTAssertFalse(slice.failed)
+                XCTAssertLessThanOrEqual(slice.entries.count, 1024)
+                received += slice.entries; done = slice.done; delivered.fulfill()
+            }
+            wait(for: [delivered], timeout: 5)
+        }
+        XCTAssertEqual(received.map(\.event), expected.entries.map(\.event))
+        XCTAssertEqual(received.map(\.startsSession), expected.entries.map(\.startsSession))
+        for (a, b) in zip(received, expected.entries) { XCTAssertEqual(a.seconds, b.seconds, accuracy: 0.000_001) }
+        reader.cancel()
+    }
+
+    func testStreamSnapshotsFileLengthAndRecoversTruncatedTail() throws {
+        let store = try KeyReplayStore(directory: directory(), key: SymmetricKey(size: .bits256))
+        let value = batch()
+        try store.append(value, day: "2026-11-15")
+        let snapshot = try store.makeReader(day: "2026-11-15")
+        try store.append(batch(), day: "2026-11-15")
+        XCTAssertEqual(try prepared(snapshot).stream?.eventCount, value.events.count)
+        let url = store.directory.appendingPathComponent("2026-11-15/" + value.session.uuidString + ".ktr")
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data([1, 2])); try handle.close()
+        let damaged = try store.makeReader(day: "2026-11-15")
+        let plan = try prepared(damaged)
+        XCTAssertTrue(plan.hasUnreadableChunks)
+        XCTAssertEqual(damaged.eventCount, value.events.count * 2)
+        snapshot.cancel(); damaged.cancel()
+    }
+
+    func testStreamCancellationSuppressesPreparationAndQueuedDelivery() throws {
+        let store = try KeyReplayStore(directory: directory(), key: SymmetricKey(size: .bits256))
+        try store.append(batch(), day: "2026-11-15")
+        let cancelled = try store.makeReader(day: "2026-11-15")
+        let unexpected = expectation(description: "No cancelled callbacks"); unexpected.isInverted = true
+        cancelled.cancel(); cancelled.prepare { _ in unexpected.fulfill() }
+        let reader = try store.makeReader(day: "2026-11-15")
+        _ = try prepared(reader)
+        reader.take(through: 100) { _ in unexpected.fulfill() }
+        reader.cancel()
+        wait(for: [unexpected], timeout: 0.1)
+    }
+
     func testDailyPlaybackCompressesAWholeDayWithoutChangingSourceRecords() {
         let entries: [KeyReplayDay.Entry] = (0..<12_000).map { index in
             let time = Double(index) * 2

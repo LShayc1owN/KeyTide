@@ -350,20 +350,20 @@ final class AllTimeStatsViewController: NSViewController {
         heatmapView.activityData = manager.heatmapActivityData().map {
             ActivityHeatmapView.DayActivity(date: $0.date, keyPresses: $0.keyPresses, clicks: $0.clicks)
         }
-        monthCalendarView.update(days: heatmapView.activityData, selectedDate: selectedDate)
+        updateMonthCalendar()
         updateLifetime(stats)
         updateInsights(stats)
         updateTopKeys(stats.keyPressCounts)
     }
 
     private func updateOverview() {
-        let keyTotal = visibleDays.reduce(0) { $0 + $1.keyPresses }
-        let clickTotal = visibleDays.reduce(0) { $0 + $1.clicks }
-        totalLabel.stringValue = formatNumber(keyTotal + clickTotal)
+        let keyTotal = saturatingNonnegativeSum(visibleDays.map(\.keyPresses))
+        let clickTotal = saturatingNonnegativeSum(visibleDays.map(\.clicks))
+        totalLabel.stringValue = formatNumber(saturatingNonnegativeSum([keyTotal, clickTotal]))
         keyTotalLabel.stringValue = String(format: NSLocalizedString("activity.keysFormat", comment: ""), formatNumber(keyTotal))
         clickTotalLabel.stringValue = String(format: NSLocalizedString("activity.clicksFormat", comment: ""), formatNumber(clickTotal))
         overviewView.update(days: visibleDays, selectedDate: selectedDate)
-        monthCalendarView.update(days: heatmapView.activityData, selectedDate: selectedDate)
+        updateMonthCalendar()
         nextButton.isEnabled = periodOffset > 0
         previousButton.isEnabled = visibleDays.first.map { first in
             loadedDays.keys.contains { $0 < first.date }
@@ -405,13 +405,14 @@ final class AllTimeStatsViewController: NSViewController {
         if let heatmapIndex = heatmapView.activityData.firstIndex(where: { Calendar.current.isDate($0.date, inSameDayAs: visibleDays[index].date) }) {
             heatmapView.selectDay(at: heatmapIndex)
         }
+        updateMonthCalendar()
         overviewView.update(days: visibleDays, selectedDate: selectedDate)
         updateSelectedDay()
     }
 
     private func calendarSelectionChanged(_ day: ActivityHeatmapView.DayActivity?) {
         selectedDate = day?.date
-        monthCalendarView.update(days: heatmapView.activityData, selectedDate: selectedDate)
+        updateMonthCalendar()
         if let day, !visibleDays.contains(where: { Calendar.current.isDate($0.date, inSameDayAs: day.date) }) {
             overviewView.update(days: visibleDays, selectedDate: nil)
             updateSelectedDay()
@@ -419,6 +420,10 @@ final class AllTimeStatsViewController: NSViewController {
         }
         overviewView.update(days: visibleDays, selectedDate: selectedDate)
         updateSelectedDay()
+    }
+
+    private func updateMonthCalendar() {
+        monthCalendarView.update(days: Array(loadedDays.values), selectedDate: selectedDate)
     }
 
     private func updateLifetime(_ stats: AllTimeStats) {
@@ -442,8 +447,8 @@ final class AllTimeStatsViewController: NSViewController {
         }
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .medium
-        let averageKeys = stats.keyActiveDays > 0 ? Int((Double(stats.totalKeyPresses) / Double(stats.keyActiveDays)).rounded()) : 0
-        let averageClicks = stats.clickActiveDays > 0 ? Int((Double(stats.totalClicks) / Double(stats.clickActiveDays)).rounded()) : 0
+        let averageKeys = averageCount(total: stats.totalKeyPresses, activeDays: stats.keyActiveDays)
+        let averageClicks = averageCount(total: stats.totalClicks, activeDays: stats.clickActiveDays)
         insightsGrid.addArrangedSubview(insightRow([
             ActivityInsightView(title: NSLocalizedString("activity.insight.keyboardPeak", comment: ""), value: formatNumber(stats.maxDailyKeyPresses), detail: stats.maxDailyKeyPressesDate.map { dateFormatter.string(from: $0) } ?? "—") { [weak self] in self?.showPeakDay(stats.maxDailyKeyPressesDate) },
             ActivityInsightView(title: NSLocalizedString("activity.insight.mousePeak", comment: ""), value: formatNumber(stats.maxDailyClicks), detail: stats.maxDailyClicksDate.map { dateFormatter.string(from: $0) } ?? "—") { [weak self] in self?.showPeakDay(stats.maxDailyClicksDate) },
@@ -454,13 +459,17 @@ final class AllTimeStatsViewController: NSViewController {
         if let index = stats.mostActiveWeekday, index > 0, index <= (dateFormatter.shortWeekdaySymbols?.count ?? 0) {
             weekday = dateFormatter.shortWeekdaySymbols?[index - 1] ?? "—"
         }
-        let clickTotal = max(1, stats.totalLeftClicks + stats.totalNonLeftClicks)
-        let leftRatio = Int((Double(stats.totalLeftClicks) / Double(clickTotal) * 100).rounded())
+        let leftClicks = Double(stats.totalLeftClicks)
+        let otherClicks = [stats.totalRightClicks, stats.totalMiddleClicks, stats.totalSideBackClicks, stats.totalSideForwardClicks]
+            .reduce(0.0) { $0 + Double($1) }
+        let clickTotal = leftClicks + otherClicks
+        let leftRatio = clickTotal > 0 ? Int((leftClicks / clickTotal * 100).rounded()) : 0
+        let clickRatioText = clickTotal > 0 ? "\(leftRatio)% / \(100 - leftRatio)%" : "—"
         let ratio = stats.inputRatio
         let styleKey = ratio > 5 ? "insights.style.keyboard" : ratio < 1 ? "insights.style.mouse" : "insights.style.balanced"
         insightsGrid.addArrangedSubview(insightRow([
             ActivityInsightView(title: NSLocalizedString("allTimeStats.mostActiveWeekday", comment: ""), value: weekday, detail: NSLocalizedString("insights.subtitle.weeklyBest", comment: "")),
-            ActivityInsightView(title: NSLocalizedString("insights.clickRatio", comment: ""), value: "\(leftRatio)% / \(100 - leftRatio)%", detail: NSLocalizedString("insights.leftRight", comment: "")),
+            ActivityInsightView(title: NSLocalizedString("insights.clickRatio", comment: ""), value: clickRatioText, detail: NSLocalizedString("insights.leftRight", comment: "")),
             ActivityInsightView(title: NSLocalizedString("insights.perfectionist", comment: ""), value: String(format: "%.1f%%", stats.correctionRate * 100), detail: NSLocalizedString("activity.insight.revision", comment: "")),
             ActivityInsightView(title: NSLocalizedString("insights.inputStyle", comment: ""), value: NSLocalizedString(styleKey, comment: ""), detail: String(format: NSLocalizedString("insights.subtitle.ratioFormat", comment: ""), ratio))
         ]))
@@ -519,7 +528,7 @@ final class AllTimeStatsViewController: NSViewController {
 
     private func showPeakDay(_ date: Date?) {
         guard let date else { return }
-        guard let index = heatmapView.activityData.firstIndex(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) else {
+        guard let day = loadedDays[Calendar.current.startOfDay(for: date)] else {
             let alert = NSAlert()
             alert.alertStyle = .informational
             alert.messageText = NSLocalizedString("heatmap.outsideCalendar", comment: "")
@@ -534,8 +543,7 @@ final class AllTimeStatsViewController: NSViewController {
             return
         }
         setCalendarExpanded(true)
-        heatmapView.selectDay(at: index)
-        monthCalendarView.update(days: heatmapView.activityData, selectedDate: heatmapView.activityData[index].date)
+        calendarSelectionChanged(day)
         view.layoutSubtreeIfNeeded()
         let target = NSPoint(x: 0, y: max(0, calendarButton.frame.minY - 15))
         NSAnimationContext.runAnimationGroup { context in
@@ -577,6 +585,12 @@ final class AllTimeStatsViewController: NSViewController {
 
     private func formatNumber(_ number: Int) -> String {
         NumberFormatter.localizedString(from: NSNumber(value: number), number: .decimal)
+    }
+
+    private func averageCount(total: Int, activeDays: Int) -> Int {
+        guard activeDays > 0 else { return 0 }
+        let roundsUp = total % activeDays >= activeDays / 2 + activeDays % 2
+        return saturatingNonnegativeSum([total / activeDays, roundsUp ? 1 : 0])
     }
 
     private func updateAppearance() {

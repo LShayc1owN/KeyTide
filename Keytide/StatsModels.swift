@@ -26,7 +26,7 @@ func formatMenuBarCompactNumber(_ number: Int) -> String {
     return String(format: "%.\(decimalPlaces)f%@", truncatedValue, units[unitIndex])
 }
 
-private func saturatingNonnegativeSum(_ values: [Int]) -> Int {
+func saturatingNonnegativeSum(_ values: [Int]) -> Int {
     values.reduce(0) { total, value in
         let nonnegative = max(0, value)
         let (sum, overflow) = total.addingReportingOverflow(nonnegative)
@@ -295,7 +295,7 @@ func keyBreakdownDisplayCounts(from keyPressCounts: [String: Int]) -> [String: I
         let count = max(0, rawCount)
         let normalizedKey = normalizedKeyBreakdownDisplayKey(rawKey)
         guard !normalizedKey.isEmpty, count > 0 else { continue }
-        aggregated[normalizedKey, default: 0] += count
+        aggregated[normalizedKey] = saturatingNonnegativeSum([aggregated[normalizedKey, default: 0], count])
     }
 
     return aggregated
@@ -471,6 +471,9 @@ struct DailyStats: Codable {
             return intVal
         }
         if let doubleVal = try? container.decodeIfPresent(Double.self, forKey: key) {
+            guard doubleVal.isFinite else { return 0 }
+            if doubleVal >= Double(Int.max) { return Int.max }
+            if doubleVal <= Double(Int.min) { return Int.min }
             return Int(doubleVal)
         }
         return 0

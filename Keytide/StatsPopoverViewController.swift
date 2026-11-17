@@ -650,13 +650,13 @@ class StatsPopoverViewController: NSViewController {
     // MARK: - KPS 实时刷新
 
     private func updateKPSBadge() {
-        let stats = StatsManager.shared.currentStats
-        kpsBadge.update(peakKPS: stats.peakKPS, peakCPS: stats.peakCPS)
+        let rates = StatsManager.shared.currentRatesSnapshot()
+        kpsBadge.update(peakKPS: rates.peakKPS, peakCPS: rates.peakCPS)
     }
 
     private func refreshLiveRates() {
-        updateKPSBadge()
         let rates = StatsManager.shared.currentRatesSnapshot()
+        kpsBadge.update(peakKPS: rates.peakKPS, peakCPS: rates.peakCPS)
         pulseView.append(currentKPS: rates.currentKPS, currentCPS: rates.currentCPS)
     }
 
@@ -1662,6 +1662,12 @@ class StatsChartView: NSView {
                style: Style,
                animated: Bool,
                slideDirection: SlideDirection? = nil) {
+        let selectedDate = hoverIndex.flatMap { index in
+            self.series.indices.contains(index) ? self.series[index].date : nil
+        }
+        let preservesSelection = self.metric == metric && self.range == range &&
+            Set(self.series.map(\.date)) == Set(series.map(\.date))
+
         if animated {
             addSlideTransition(direction: slideDirection ?? .right)
         }
@@ -1675,6 +1681,11 @@ class StatsChartView: NSView {
         setAccessibilityHelp(help)
         self.range = range
         self.style = style
+        if preservesSelection, let selectedDate {
+            hoverIndex = series.firstIndex { $0.date == selectedDate }
+        }
+        // Reposition labels after values, axis scale and chart style have changed.
+        updateHoverLabels()
     }
     
     override func viewDidMoveToWindow() {

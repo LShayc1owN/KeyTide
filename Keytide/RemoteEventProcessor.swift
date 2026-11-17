@@ -87,6 +87,13 @@ final class RemoteEventProcessor: NSObject, KeytideEventSinkProtocol {
             recordReplay(payload, growthName: modifierName)
 
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            // Older installed Helpers label every non-forward auxiliary button
+            // as Back. The existing physical number distinguishes Middle.
+            if type == .otherMouseDown,
+               (payload[HelperPayloadFields.buttonNumber] as? NSNumber)?.intValue == 2 {
+                stats.incrementMiddleClicks(appIdentity: appIdentity(forPID: pid))
+                return
+            }
             let role = payload[HelperPayloadFields.buttonRole] as? String
             let ident = appIdentity(forPID: pid)
             switch role {

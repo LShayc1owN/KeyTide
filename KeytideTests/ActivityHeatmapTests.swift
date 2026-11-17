@@ -3,6 +3,12 @@ import XCTest
 @testable import KeytideCore
 
 final class ActivityHeatmapTests: XCTestCase {
+    func testCombinedMetricSaturatesExtremeImportedCounts() {
+        let day = ActivityHeatmapView.DayActivity(date: Date(), keyPresses: Int.max, clicks: 1)
+        XCTAssertEqual(day.total, Int.max)
+        XCTAssertEqual(ActivityHeatmapView.Metric.combined.value(for: day), Int.max)
+    }
+
     private func days(_ count: Int) -> [ActivityHeatmapView.DayActivity] {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_730_000_000))

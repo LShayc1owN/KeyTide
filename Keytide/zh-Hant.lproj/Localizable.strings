@@ -108,6 +108,8 @@
 "update.notice.suppress" = "下次不再提示";
 "button.importData" = "數據導入";
 "button.exportData" = "數據導出";
+"import.inProgress" = "正在導入…";
+"export.inProgress" = "正在導出…";
 "button.quit" = "退出應用";
 
 "keyBreakdown.empty" = "暫無鍵位數據";
@@ -171,7 +173,7 @@
 "insights.peakDay" = "巔峰單日";
 "insights.dailyAvg" = "每日平均";
 "insights.clickRatio" = "點擊佔比";
-"insights.leftRight" = "左 : 右";
+"insights.leftRight" = "左 : 其他";
 "allTimeStats.mostActiveWeekday" = "效率巔峰";
 "allTimeStats.marathonMouse" = "鼠標長征";
 "allTimeStats.everestScroll" = "指尖攀登";

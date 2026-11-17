@@ -252,6 +252,18 @@ final class StatsModelsTests: XCTestCase {
         XCTAssertEqual(decoded.peakCPS, 4)
     }
 
+    func testDailyStatsLegacyPeaksOutsideIntegerRangeDoNotTrap() throws {
+        let data = Data(#"{"peakKPS":1e100,"peakCPS":-1e100}"#.utf8)
+        let decoded = try JSONDecoder().decode(DailyStats.self, from: data)
+        XCTAssertEqual(decoded.peakKPS, Int.max)
+        XCTAssertEqual(decoded.peakCPS, Int.min)
+    }
+
+    func testDisplayBreakdownSaturatesCollapsedModifierVariants() {
+        let result = keyBreakdownDisplayCounts(from: ["LeftCmd+A": Int.max, "RightCmd+A": 1])
+        XCTAssertEqual(result["Cmd+A"], Int.max)
+    }
+
     func testDailyStatsExplicitSideClicksOverrideLegacyOtherClicks() throws {
         let json = #"{"sideBackClicks":2,"sideForwardClicks":3,"otherClicks":100}"#.data(using: .utf8)!
 

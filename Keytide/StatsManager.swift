@@ -364,10 +364,10 @@ class StatsManager {
     func incrementKeyPresses(keyName: String? = nil, appIdentity: AppIdentity? = nil) {
         statsStateLock.lock()
         ensureCurrentDayLocked()
-        currentStats.keyPresses += 1
+        currentStats.keyPresses = safeAdd(currentStats.keyPresses, 1)
         let canonicalName = keyName.map(canonicalKeyName).flatMap { $0.isEmpty ? nil : $0 }
         if let canonicalName {
-            currentStats.keyPressCounts[canonicalName, default: 0] += 1
+            currentStats.keyPressCounts[canonicalName] = safeAdd(currentStats.keyPressCounts[canonicalName, default: 0], 1)
         }
         if let appIdentity = appIdentity {
             updateAppStatsLocked(for: appIdentity) { stats in
@@ -385,7 +385,7 @@ class StatsManager {
     func incrementLeftClicks(appIdentity: AppIdentity? = nil) {
         statsStateLock.lock()
         ensureCurrentDayLocked()
-        currentStats.leftClicks += 1
+        currentStats.leftClicks = safeAdd(currentStats.leftClicks, 1)
         if let appIdentity = appIdentity {
             updateAppStatsLocked(for: appIdentity) { stats in
                 stats.recordLeftClick()
@@ -402,7 +402,7 @@ class StatsManager {
     func incrementRightClicks(appIdentity: AppIdentity? = nil) {
         statsStateLock.lock()
         ensureCurrentDayLocked()
-        currentStats.rightClicks += 1
+        currentStats.rightClicks = safeAdd(currentStats.rightClicks, 1)
         if let appIdentity = appIdentity {
             updateAppStatsLocked(for: appIdentity) { stats in
                 stats.recordRightClick()
@@ -416,10 +416,25 @@ class StatsManager {
         notifyClickThresholdIfNeeded()
     }
 
+    func incrementMiddleClicks(appIdentity: AppIdentity? = nil) {
+        statsStateLock.lock()
+        ensureCurrentDayLocked()
+        currentStats.middleClicks = safeAdd(currentStats.middleClicks, 1)
+        if let appIdentity {
+            updateAppStatsLocked(for: appIdentity) { $0.recordMiddleClick() }
+        }
+        statsStateLock.unlock()
+        registerInputEvent()
+        recordClickForPeakCPS()
+        notifyMenuBarUpdate()
+        notifyStatsUpdate()
+        notifyClickThresholdIfNeeded()
+    }
+
     func incrementSideBackClicks(appIdentity: AppIdentity? = nil) {
         statsStateLock.lock()
         ensureCurrentDayLocked()
-        currentStats.sideBackClicks += 1
+        currentStats.sideBackClicks = safeAdd(currentStats.sideBackClicks, 1)
         if let appIdentity = appIdentity {
             updateAppStatsLocked(for: appIdentity) { stats in
                 stats.recordSideBackClick()
@@ -436,7 +451,7 @@ class StatsManager {
     func incrementSideForwardClicks(appIdentity: AppIdentity? = nil) {
         statsStateLock.lock()
         ensureCurrentDayLocked()
-        currentStats.sideForwardClicks += 1
+        currentStats.sideForwardClicks = safeAdd(currentStats.sideForwardClicks, 1)
         if let appIdentity = appIdentity {
             updateAppStatsLocked(for: appIdentity) { stats in
                 stats.recordSideForwardClick()
@@ -871,12 +886,29 @@ class StatsManager {
 
     // MARK: - 数据导入导出
 
-    private struct ExportPayload: Codable {
+    fileprivate struct ExportPayload: Codable {
         let version: Int
         let scope: String?
         let exportedAt: Date
         let currentStats: DailyStats
         let history: [String: DailyStats]
+    }
+
+    /// A value snapshot: encoding can run off the main thread without reading
+    /// live manager state or changing the export format.
+    struct ExportSnapshot {
+        fileprivate let payload: ExportPayload
+
+        func encodedData() throws -> Data {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            return try encoder.encode(payload)
+        }
+    }
+
+    struct PreparedImport {
+        fileprivate let payload: ExportPayload
     }
 
     private enum ImportError: LocalizedError {
@@ -897,6 +929,10 @@ class StatsManager {
     }
 
     func exportStatsData() throws -> Data {
+        try exportSnapshot().encodedData()
+    }
+
+    func exportSnapshot() -> ExportSnapshot {
         statsStateLock.lock()
         var exportHistory = history
         var current = currentStats
@@ -913,13 +949,17 @@ class StatsManager {
             currentStats: current,
             history: exportHistory
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(payload)
+        return ExportSnapshot(payload: payload)
     }
 
     func importStatsData(from data: Data, mode: ImportMode = .overwrite) throws {
+        applyPreparedImport(try Self.prepareStatsImport(from: data), mode: mode)
+    }
+
+    /// Decoding has no manager or storage side effects. The UI may prepare a
+    /// large file on its I/O queue, then commit through the existing main-thread
+    /// timer, normalization and persistence path.
+    static func prepareStatsImport(from data: Data) throws -> PreparedImport {
         guard !data.isEmpty else { throw ImportError.emptyData }
 
         let decoder = JSONDecoder()
@@ -934,7 +974,11 @@ class StatsManager {
 
         guard payload.version == 1 else { throw ImportError.unsupportedVersion }
 
-        applyImportedPayload(payload, mode: mode)
+        return PreparedImport(payload: payload)
+    }
+
+    func applyPreparedImport(_ prepared: PreparedImport, mode: ImportMode = .overwrite) {
+        applyImportedPayload(prepared.payload, mode: mode)
     }
 
     private func applyImportedPayload(_ payload: ExportPayload, mode: ImportMode) {
@@ -947,15 +991,20 @@ class StatsManager {
 
         let today = environment.calendar().startOfDay(for: environment.now())
         let todayKey = dateFormatter.string(from: today)
+        // Keep the live base and replacement in one transaction. XPC input
+        // arriving during a merge must not be overwritten by an older snapshot.
+        statsStateLock.lock()
         let resolvedHistory: [String: DailyStats]
         switch mode {
         case .overwrite:
             resolvedHistory = importedHistory
         case .merge:
-            resolvedHistory = mergedHistory(base: currentHistorySnapshot(), imported: importedHistory)
+            var base = normalizedHistory(history)
+            let current = normalizedDailyStats(currentStats)
+            base[dateFormatter.string(from: current.date)] = current
+            resolvedHistory = mergedHistory(base: base, imported: importedHistory)
         }
 
-        statsStateLock.lock()
         history = resolvedHistory
         currentStats = resolvedHistory[todayKey] ?? DailyStats(date: today)
         recentKeyTimestamps.removeAll()
@@ -1049,6 +1098,7 @@ class StatsManager {
                 existing.keyPressCounts = mergedCounterMap(existing.keyPressCounts, importedStats.keyPressCounts)
                 existing.leftClicks = safeAdd(existing.leftClicks, importedStats.leftClicks)
                 existing.rightClicks = safeAdd(existing.rightClicks, importedStats.rightClicks)
+                existing.middleClicks = safeAdd(existing.middleClicks, importedStats.middleClicks)
                 existing.sideBackClicks = safeAdd(existing.sideBackClicks, importedStats.sideBackClicks)
                 existing.sideForwardClicks = safeAdd(existing.sideForwardClicks, importedStats.sideForwardClicks)
                 existing.scrollDistance = safeAddDistance(existing.scrollDistance, importedStats.scrollDistance)
@@ -1134,6 +1184,7 @@ class StatsManager {
             stats.keyPressCounts = normalizedKeyPressCounts(stats.keyPressCounts)
             stats.leftClicks = max(0, stats.leftClicks)
             stats.rightClicks = max(0, stats.rightClicks)
+            stats.middleClicks = max(0, stats.middleClicks)
             stats.sideBackClicks = max(0, stats.sideBackClicks)
             stats.sideForwardClicks = max(0, stats.sideForwardClicks)
             stats.scrollDistance = stats.scrollDistance.isFinite ? max(0, stats.scrollDistance) : 0
@@ -1162,43 +1213,43 @@ class StatsManager {
 
     @discardableResult
     func addStatsUpdateHandler(_ handler: @escaping () -> Void) -> UUID {
+        precondition(Thread.isMainThread)
         let token = UUID()
         statsUpdateHandlers[token] = handler
         return token
     }
 
     func removeStatsUpdateHandler(_ token: UUID) {
+        precondition(Thread.isMainThread)
         statsUpdateHandlers[token] = nil
     }
 
     private func notifyMenuBarUpdate() {
-        guard menuBarUpdateHandler != nil else { return }
         DispatchQueue.main.async { [weak self] in
             self?.menuBarUpdateHandler?()
         }
     }
 
     private func notifyStatsUpdate() {
-        guard !statsUpdateHandlers.isEmpty else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            for handler in self.statsUpdateHandlers.values {
+            for handler in Array(self.statsUpdateHandlers.values) {
                 handler()
             }
         }
     }
 
     private func scheduleDebouncedStatsUpdate() {
-        guard !statsUpdateHandlers.isEmpty else { return }
         guard environment.schedulesAutomaticWork else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            // 取消旧的 timer，实现真正的防抖
-            self.statsUpdateTimer?.invalidate()
+            guard let self, !self.statsUpdateHandlers.isEmpty, self.statsUpdateTimer == nil else { return }
+            // A bounded one-shot refresh keeps its original deadline while
+            // movement/scrolling continues; new samples share the same timer.
             self.statsUpdateTimer = Timer.scheduledTimer(withTimeInterval: self.statsUpdateDebounceInterval, repeats: false) { [weak self] _ in
                 self?.statsUpdateTimer = nil
                 self?.notifyStatsUpdate()
             }
+            if let timer = self.statsUpdateTimer { RunLoop.main.add(timer, forMode: .common) }
         }
     }
 
@@ -1463,7 +1514,11 @@ extension StatsManager {
     func formatHistoryValue(metric: HistoryMetric, value: Double) -> String {
         switch metric {
         case .keyPresses, .clicks:
-            return formatNumber(Int(value))
+            let count: Int
+            if !value.isFinite || value <= 0 { count = 0 }
+            else if value >= Double(Int.max) { count = Int.max }
+            else { count = Int(value) }
+            return formatNumber(count)
         case .mouseDistance:
             return formatMouseDistance(value)
         case .scrollDistance:
@@ -1608,21 +1663,21 @@ extension StatsManager {
     /// Derived on demand: no save, cache, scheduling or persistence.
     func keyboardDailyUsage() -> [KeyboardUsageDay] {
         assert(Thread.isMainThread)
-        return normalizedHistory(displayHistorySnapshot()).map { key, day in
+        return displayHistorySnapshot().map { key, day in
             KeyboardUsageDay(dayKey: key, totalKeyPresses: day.keyPresses, keyPressCounts: day.keyPressCounts)
         }.sorted { $0.dayKey < $1.dayKey }
     }
 
     func cumulativeKeyboardTimeline() -> [CumulativeKeyboardSnapshot] {
         assert(Thread.isMainThread)
-        return CumulativeKeyboardTimeline.build(history: normalizedHistory(displayHistorySnapshot()))
+        return CumulativeKeyboardTimeline.build(history: displayHistorySnapshot())
     }
 
     func cumulativeKeyboardSnapshot(asOf date: Date) -> CumulativeKeyboardSnapshot? {
         assert(Thread.isMainThread)
         return CumulativeKeyboardTimeline.snapshot(
             asOf: dateFormatter.string(from: environment.calendar().startOfDay(for: date)),
-            history: normalizedHistory(displayHistorySnapshot())
+            history: displayHistorySnapshot()
         )
     }
 
@@ -1630,10 +1685,23 @@ extension StatsManager {
     func keyboardTrackingPeriod() -> KeyboardTrackingPeriod? {
         assert(Thread.isMainThread)
         return KeyboardTrackingPeriod(
-            history: normalizedHistory(displayHistorySnapshot()),
+            history: displayHistorySnapshot(),
             calendar: environment.calendar(),
             dateKeyFormatter: dateFormatter
         )
+    }
+
+    /// One normalized display snapshot supplies every Growth projection coherently.
+    func growthKeyboardPresentation(now: Date, calendar: Calendar) -> GrowthKeyboardPresentation? {
+        assert(Thread.isMainThread)
+        let snapshot = displayHistorySnapshot()
+        guard let period = KeyboardTrackingPeriod(history: snapshot,
+            calendar: environment.calendar(), dateKeyFormatter: dateFormatter) else { return nil }
+        let daily = snapshot.map { key, day in
+            KeyboardUsageDay(dayKey: key, totalKeyPresses: day.keyPresses, keyPressCounts: day.keyPressCounts)
+        }.sorted { $0.dayKey < $1.dayKey }
+        return GrowthKeyboardPresentation(timeline: CumulativeKeyboardTimeline.build(history: snapshot),
+            period: period, now: now, calendar: calendar, dailyUsage: daily)
     }
 
     /// Returns normalized local history, including the unsaved current day exactly once.
@@ -1800,13 +1868,14 @@ extension StatsManager {
             if !appStats.displayName.isEmpty {
                 total.displayName = appStats.displayName
             }
-            total.keyPresses += appStats.keyPresses
+            total.keyPresses = safeAdd(total.keyPresses, appStats.keyPresses)
             total.keyPressCounts = mergedCounterMap(total.keyPressCounts, appStats.keyPressCounts)
-            total.leftClicks += appStats.leftClicks
-            total.rightClicks += appStats.rightClicks
-            total.sideBackClicks += appStats.sideBackClicks
-            total.sideForwardClicks += appStats.sideForwardClicks
-            total.scrollDistance += appStats.scrollDistance
+            total.leftClicks = safeAdd(total.leftClicks, appStats.leftClicks)
+            total.rightClicks = safeAdd(total.rightClicks, appStats.rightClicks)
+            total.middleClicks = safeAdd(total.middleClicks, appStats.middleClicks)
+            total.sideBackClicks = safeAdd(total.sideBackClicks, appStats.sideBackClicks)
+            total.sideForwardClicks = safeAdd(total.sideForwardClicks, appStats.sideForwardClicks)
+            total.scrollDistance = safeAddDistance(total.scrollDistance, appStats.scrollDistance)
             total.scrollSessions = aggregateScrollSessionCounts([
                 total.scrollSessions,
                 appStats.scrollSessions

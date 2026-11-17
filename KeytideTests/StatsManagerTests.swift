@@ -300,6 +300,144 @@ final class StatsManagerTests: XCTestCase {
         XCTAssertEqual(restored.currentStats.leftClicks, 1)
     }
 
+    func testExportSnapshotCanBeEncodedAndPreparedOffMainWithoutReadingLiveState() throws {
+        let sourceContext = try makeContext()
+        let destinationContext = try makeContext()
+        defer { sourceContext.cleanUp(); destinationContext.cleanUp() }
+        let source = sourceContext.makeManager()
+        let destination = destinationContext.makeManager()
+        source.incrementKeyPresses(keyName: "A")
+        let snapshot = source.exportSnapshot()
+        source.incrementKeyPresses(keyName: "B")
+
+        let completed = expectation(description: "Background export and import preparation")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try StatsManager.prepareStatsImport(from: snapshot.encodedData()) }
+            DispatchQueue.main.async {
+                defer { completed.fulfill() }
+                switch result {
+                case .success(let prepared):
+                    XCTAssertEqual(destination.currentStats.keyPresses, 0)
+                    destination.applyPreparedImport(prepared)
+                    XCTAssertEqual(destination.currentStats.keyPresses, 1)
+                    XCTAssertEqual(destination.currentStats.keyPressCounts, ["A": 1])
+                    XCTAssertEqual(source.currentStats.keyPresses, 2)
+                case .failure(let error): XCTFail("Transfer failed: \(error)")
+                }
+            }
+        }
+        wait(for: [completed], timeout: 5)
+    }
+
+    func testMiddleClickIsAttributedAndSurvivesImportMerge() throws {
+        let context = try makeContext()
+        defer { context.cleanUp() }
+        let manager = context.makeManager()
+        let app = AppIdentity(bundleId: "com.test.middle", displayName: "Middle")
+        manager.incrementMiddleClicks(appIdentity: app)
+        XCTAssertEqual(manager.currentStats.middleClicks, 1)
+        XCTAssertEqual(manager.currentStats.sideBackClicks, 0)
+        XCTAssertEqual(manager.currentStats.totalClicks, 1)
+        XCTAssertEqual(manager.currentStats.appStats[app.bundleId]?.middleClicks, 1)
+        XCTAssertEqual(manager.interactionProfiles(range: .today).first?.pointer.rawValue, 1)
+        let exported = try manager.exportStatsData()
+        try manager.importStatsData(from: exported, mode: .merge)
+        XCTAssertEqual(manager.currentStats.middleClicks, 2)
+        XCTAssertEqual(manager.appStatsSummary(range: .today).first?.middleClicks, 2)
+        XCTAssertEqual(try decodePersistedCurrent(from: context.defaults).appStats[app.bundleId]?.middleClicks, 2)
+    }
+
+    func testContinuousDistanceInputRefreshesBeforeInputStops() throws {
+        let context = try makeContext()
+        defer { context.cleanUp() }
+        let manager = StatsManager(environment: .init(userDefaults: context.defaults,
+            now: { context.clock.now }, calendar: { context.calendar }, makeDateKeyFormatter: {
+                let value = DateFormatter(); value.calendar = context.calendar
+                value.timeZone = context.calendar.timeZone; value.dateFormat = "yyyy-MM-dd"; return value
+            }, notificationCenter: NotificationCenter(), schedulesAutomaticWork: true,
+            sendThresholdNotification: { _, _, _ in }))
+        defer { manager.flushPendingSave() }
+        var samples = 0
+        let updated = expectation(description: "Refresh during continuous movement")
+        var fulfilled = false
+        let token = manager.addStatsUpdateHandler {
+            if !fulfilled && samples > 0 && samples < 25 {
+                fulfilled = true; updated.fulfill()
+            }
+        }
+        defer { manager.removeStatsUpdateHandler(token) }
+        let input = Timer(timeInterval: 0.03, repeats: true) { _ in
+            samples += 1; manager.addMouseDistance(1)
+        }
+        RunLoop.main.add(input, forMode: .common)
+        defer { input.invalidate() }
+        wait(for: [updated], timeout: 0.7)
+    }
+
+    func testPreparedImportMergeUsesStateAtCommitAndPreparationDoesNotPersist() throws {
+        let context = try makeContext()
+        defer { context.cleanUp() }
+        let manager = context.makeManager()
+        manager.incrementKeyPresses(keyName: "A")
+        let persistedBefore = context.defaults.data(forKey: historyKey)
+        let prepared = try StatsManager.prepareStatsImport(from: importData(
+            current: makeStats(on: context.day(offset: 0), keyPresses: 7), history: [:]))
+        XCTAssertEqual(manager.currentStats.keyPresses, 1)
+        XCTAssertEqual(context.defaults.data(forKey: historyKey), persistedBefore)
+        manager.incrementKeyPresses(keyName: "B")
+        manager.applyPreparedImport(prepared, mode: .merge)
+        XCTAssertEqual(manager.currentStats.keyPresses, 9)
+        XCTAssertEqual(try decodePersistedCurrent(from: context.defaults).keyPresses, 9)
+    }
+
+    func testMergeImportPreservesConcurrentInput() throws {
+        let context = try makeContext()
+        defer { context.cleanUp() }
+        let manager = context.makeManager()
+        let today = context.day(offset: 0)
+        var history: [String: DailyStats] = [:]
+        for offset in 1...80 {
+            let date = context.day(offset: -offset)
+            history[context.dayKey(date)] = makeStats(on: date, keyPresses: 1)
+        }
+        let prepared = try StatsManager.prepareStatsImport(from: importData(
+            current: makeStats(on: today, keyPresses: 3), history: history))
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            started.signal()
+            for _ in 0..<500 {
+                manager.incrementKeyPresses(keyName: "A")
+                Thread.sleep(forTimeInterval: 0.0002)
+            }
+            finished.leave()
+        }
+        XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+        for _ in 0..<20 { manager.applyPreparedImport(prepared, mode: .merge) }
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(manager.currentStats.keyPresses, 500 + 20 * 3)
+        XCTAssertEqual(manager.currentStats.keyPressCounts["A"], 500)
+        manager.flushPendingSave()
+        XCTAssertEqual(try decodePersistedCurrent(from: context.defaults).keyPresses, 560)
+    }
+
+    func testImportedMaximumCountersRemainUsableForNewInputAndHistoryLabels() throws {
+        let context = try makeContext()
+        defer { context.cleanUp() }
+        let manager = context.makeManager()
+        var current = makeStats(on: context.day(offset: 0), keyPresses: Int.max)
+        current.keyPressCounts = ["A": Int.max]
+        current.middleClicks = Int.max
+        try manager.importStatsData(from: importData(current: current, history: [:]))
+        manager.incrementKeyPresses(keyName: "A")
+        manager.incrementMiddleClicks()
+        XCTAssertEqual(manager.currentStats.keyPresses, Int.max)
+        XCTAssertEqual(manager.currentStats.middleClicks, Int.max)
+        XCTAssertFalse(manager.formatHistoryValue(metric: .keyPresses, value: Double(Int.max)).isEmpty)
+        XCTAssertEqual(manager.formatHistoryValue(metric: .clicks, value: .nan), "0")
+    }
+
     func testImportOverwriteReplacesLocalHistoryAndCurrentWinsPayloadTodayConflict() throws {
         let context = try makeContext()
         defer { context.cleanUp() }

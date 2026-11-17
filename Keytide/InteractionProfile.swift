@@ -50,8 +50,8 @@ enum InteractionProfileCalculator {
                 let name = app.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !name.isEmpty { total.name = name }
                 let keys = Double(max(0, app.keyPresses))
-                // Same four buttons as AppStats.totalClicks; Double avoids Int sum overflow.
-                let clicks = [app.leftClicks, app.rightClicks, app.sideBackClicks, app.sideForwardClicks]
+                // Same buttons as AppStats.totalClicks; Double avoids Int sum overflow.
+                let clicks = [app.leftClicks, app.rightClicks, app.middleClicks, app.sideBackClicks, app.sideForwardClicks]
                     .reduce(0.0) { $0 + Double(max(0, $1)) }
                 let distance = app.scrollDistance.isFinite ? max(0, app.scrollDistance) : 0
                 let sessions = Double(max(0, app.scrollSessions))

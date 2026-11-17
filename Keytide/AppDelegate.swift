@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindow: OnboardingWindowController?
     private var isTerminating = false
     private var installationInProgress = false
+    private var helperReconnectWorkItem: DispatchWorkItem?
     private var menuBarController: MenuBarController?
     private var permissionCheckTimer: Timer?
     private var permissionCheckCount = 0
@@ -47,10 +48,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if AppLaunchMode.current == .normal { KeyReplayRecording.shared.startObserving(); TrackpadRecording.shared.startObserving() }
 
         HelperXPCClient.shared.addStateObserver { [weak self] state in
-            if case .disconnected = state {
-                DispatchQueue.main.async {
-                    guard let self, !self.isTerminating, !self.installationInProgress else { return }
+            DispatchQueue.main.async {
+                guard let self, !self.isTerminating, !self.installationInProgress,
+                      HelperXPCClient.shared.state == state else { return }
+                switch state {
+                case .disconnected:
                     MonitoringStatus.shared.connectionLost()
+                    self.scheduleHelperReconnect()
+                case .connected:
+                    self.cancelHelperReconnect()
+                default: break
                 }
             }
         }
@@ -74,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ aNotification: Notification) {
         TrackpadRecording.shared.finish()
         isTerminating = true
+        cancelHelperReconnect()
         KeyReplayRecording.shared.shutdown()
         MonitoringStatus.shared.invalidate()
         Self.trackEvent("app_exit")
@@ -132,6 +140,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func bootstrapHelperPipeline(wasPreviouslyInstalled: Bool) {
         guard !isTerminating, !installationInProgress else { return }
+        cancelHelperReconnect()
         HelperXPCClient.shared.setEventSink(RemoteEventProcessor.shared)
         if AppLaunchMode.current == .guiAcceptance {
             NSLog("[GUI Acceptance] Using installed Helper only; installation, LaunchAgent management and permission migration are disabled")
@@ -168,10 +177,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func connectHelperAndStart() {
-        guard !isTerminating else { return }
+        guard !isTerminating, !installationInProgress else { return }
+        cancelHelperReconnect()
         HelperXPCClient.shared.connect { [weak self] state in
             DispatchQueue.main.async {
-                guard let self = self, !self.isTerminating else { return }
+                guard let self = self, !self.isTerminating, !self.installationInProgress,
+                      HelperXPCClient.shared.state == state else { return }
                 NSLog("[AppDelegate] helper xpc state = \(state)")
                 switch state {
                 case .connected(let version, let granted):
@@ -201,14 +212,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         return
                     }
                     NSLog("[AppDelegate] helper disconnected: \(reason); retry in 5s")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                        self?.connectHelperAndStart()
-                    }
+                    self.scheduleHelperReconnect()
                 default:
                     break
                 }
             }
         }
+    }
+
+    private func scheduleHelperReconnect() {
+        guard AppLaunchMode.current == .normal, !isTerminating, !installationInProgress,
+              helperReconnectWorkItem == nil else { return }
+        guard case .disconnected = HelperXPCClient.shared.state else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.helperReconnectWorkItem = nil
+            guard AppLaunchMode.current == .normal, !self.isTerminating, !self.installationInProgress,
+                  case .disconnected = HelperXPCClient.shared.state else { return }
+            self.connectHelperAndStart()
+        }
+        helperReconnectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+
+    private func cancelHelperReconnect() {
+        helperReconnectWorkItem?.cancel()
+        helperReconnectWorkItem = nil
     }
 
     private func startMonitoringWithFeedback() {

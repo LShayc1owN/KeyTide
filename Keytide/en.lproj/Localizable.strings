@@ -108,6 +108,8 @@
 "update.notice.suppress" = "Don't show again";
 "button.importData" = "Import Data";
 "button.exportData" = "Export Data";
+"import.inProgress" = "Importing…";
+"export.inProgress" = "Exporting…";
 "button.quit" = "Quit";
 
 "keyBreakdown.empty" = "No key data yet";
@@ -171,7 +173,7 @@
 "insights.peakDay" = "Peak Day";
 "insights.dailyAvg" = "Daily Average";
 "insights.clickRatio" = "Click Ratio";
-"insights.leftRight" = "Left : Right";
+"insights.leftRight" = "Left : Other";
 "allTimeStats.mostActiveWeekday" = "Productivity Peak";
 "allTimeStats.marathonMouse" = "Mouse Marathons";
 "allTimeStats.everestScroll" = "Scroll Everests";

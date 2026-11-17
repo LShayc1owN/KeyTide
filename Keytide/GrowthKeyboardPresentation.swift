@@ -64,9 +64,7 @@ struct GrowthKeyboardPresentation {
     /// currentStats, established history normalization and local display queries.
     static func load(from manager: StatsManager, now: Date = Date(),
                      calendar: Calendar = .current) -> GrowthKeyboardPresentation? {
-        let timeline = manager.cumulativeKeyboardTimeline()
-        guard let period = manager.keyboardTrackingPeriod() else { return nil }
-        return GrowthKeyboardPresentation(timeline: timeline, period: period, now: now, calendar: calendar, dailyUsage: manager.keyboardDailyUsage())
+        manager.growthKeyboardPresentation(now: now, calendar: calendar)
     }
 
     init?(timeline: [CumulativeKeyboardSnapshot], period: KeyboardTrackingPeriod,

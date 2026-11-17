@@ -1,5 +1,6 @@
 import Cocoa
 import MetalKit
+import IOKit.hidsystem
 
 extension Notification.Name {
     static let keyboardTypingSelectionChanged = Notification.Name("Keytide.keyboardTypingSelectionChanged")
@@ -12,6 +13,9 @@ struct MechanicalFullPressState {
     private var active: [String: Impulse] = [:]
     var activeCount: Int { active.count }
     var profile = MechanicalPressProfile.deep
+    init(supported: Set<String>) {
+        self.supported = supported
+    }
     mutating func press(_ id: String, at time: Double) {
         guard supported.contains(id) else { return }
         let initial = active[id].map { profile.weight(time - $0.began, initial: $0.initial) } ?? 0
@@ -232,10 +236,19 @@ final class MechanicalKeyboardView: NSView, MTKViewDelegate {
         press(id)
     }
     override func flagsChanged(with event: NSEvent) {
-        let flags: [UInt16: NSEvent.ModifierFlags] = [54: .command, 55: .command, 56: .shift,
-            57: .capsLock, 58: .option, 59: .control, 60: .shift, 61: .option, 62: .control, 63: .function]
-        if let flag = flags[event.keyCode], event.modifierFlags.contains(flag),
-           let id = Self.physicalKeys[event.keyCode] { press(id) }
+        if let id = Self.modifierPressKeyID(event.keyCode, flags: event.modifierFlags) { press(id) }
+    }
+    static func modifierPressKeyID(_ code: UInt16, flags: NSEvent.ModifierFlags) -> String? {
+        // Caps Lock changes its toggle state on each press, including turning off.
+        if code == 57 { return physicalKeyID(code) }
+        if code == 63 { return flags.contains(.function) ? physicalKeyID(code) : nil }
+        let masks: [UInt16: UInt] = [
+            54: UInt(NX_DEVICERCMDKEYMASK), 55: UInt(NX_DEVICELCMDKEYMASK),
+            56: UInt(NX_DEVICELSHIFTKEYMASK), 60: UInt(NX_DEVICERSHIFTKEYMASK),
+            58: UInt(NX_DEVICELALTKEYMASK), 61: UInt(NX_DEVICERALTKEYMASK),
+            59: UInt(NX_DEVICELCTLKEYMASK), 62: UInt(NX_DEVICERCTLKEYMASK)]
+        guard let mask = masks[code], flags.rawValue & mask != 0 else { return nil }
+        return physicalKeyID(code)
     }
     private var eligible: Bool {
         guard let window else { return false }

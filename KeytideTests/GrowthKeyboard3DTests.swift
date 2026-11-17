@@ -1,6 +1,9 @@
 import Cocoa
 import XCTest
 import QuartzCore
+import Metal
+import CryptoKit
+import IOKit.hidsystem
 @testable import KeytideCore
 
 private final class StaticRenderScheduler {
@@ -15,6 +18,134 @@ private final class StaticRenderScheduler {
 }
 
 final class GrowthKeyboard3DTests: XCTestCase {
+    func testStreamingReplayCompletesAndReleasesReader() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Requires Metal") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try KeyReplayStore(directory: directory, key: SymmetricKey(size: .bits256))
+        let events: [KeyReplayEvent] = [
+            .init(milliseconds: 0, ordinal: 0, keyCode: 0, phase: .down, growthKeys: ["A"]),
+            .init(milliseconds: 30, ordinal: 1, keyCode: 0, phase: .up, growthKeys: [])]
+        try store.append(.init(version: 1, session: UUID(), startedAt: Date(), events: events), day: "2026-11-17")
+        let reader = try store.makeReader(day: "2026-11-17")
+        let ready = expectation(description: "Stream ready")
+        var prepared: GrowthReplayPressPlan?
+        reader.prepare { result in prepared = try? result.get(); ready.fulfill() }
+        wait(for: [ready], timeout: 5)
+        let plan = try XCTUnwrap(prepared)
+        let baseline = layout(), scene = GrowthKeyboard3DScene(layout())
+        let surface = GrowthReplayPressSurface(scene: GrowthReplayPressScene(mac: scene),
+            size: GrowthKeyboard3DScene.size, supported: Set(baseline.keys.map(\.id)))
+        let from = baseline.keys.map { GrowthKeyboardKeyUsage(id: $0.id, count: 0) }
+        let to = baseline.keys.map { GrowthKeyboardKeyUsage(id: $0.id, count: $0.id == "A" ? 1 : 0) }
+        var count = 0
+        surface.onProgress = { _, events in count = events }
+        surface.onFailure = { XCTFail("Valid streaming replay failed") }
+        let finished = expectation(description: "Stream presented")
+        surface.play(plan, values: from, target: to, background: .clear) { finished.fulfill() }
+        wait(for: [finished], timeout: 5)
+        XCTAssertEqual(count, 1)
+        XCTAssertFalse(surface.isAnimating)
+        XCTAssertTrue(reader.cancellation.isCancelled)
+        let retained = Mirror(reflecting: surface).children.first { $0.label == "plan" }!.value as! GrowthReplayPressPlan
+        XCTAssertNil(retained.stream)
+        // Appearance/resolution changes can cancel an in-flight stream before
+        // its final image is presented. The cancelled reader must not be reused.
+        let scheduler = StaticRenderScheduler()
+        let renderer = GrowthKeyboard3DRenderer(layout: baseline, renderFrame: { _, _ in
+            GrowthKeyboard3DFrame(image: NSImage(size: GrowthKeyboard3DScene.size), rects: [:])
+        }, replayPress: { _, _, _, _ in XCTFail("Cancelled stream restarted"); return {} },
+            reduceMotion: { false }, schedule: scheduler.schedule)
+        renderer.setActive(true)
+        var presented = false
+        renderer.apply(to, animated: true, replayFrom: from, recordedReplay: plan) { presented = true }
+        scheduler.fireAll()
+        XCTAssertTrue(presented)
+        XCTAssertFalse(renderer.isReplayingPress)
+    }
+
+    func testFrameCacheHonorsByteBudgetAndStillPresentsOversizedFrames() {
+        let scheduler = StaticRenderScheduler()
+        let view = GrowthKeyboard3DRenderer(layout: layout(), renderFrame: { _, _ in
+            GrowthKeyboard3DFrame(image: NSImage(size: CGSize(width: 10, height: 10)), rects: [:])
+        }, imageSize: CGSize(width: 10, height: 10), cacheByteLimit: 3200, schedule: scheduler.schedule)
+        view.setActive(true)
+        for count in 1...4 {
+            view.apply([.init(id: "A", count: count)]); scheduler.fireAll()
+            XCTAssertLessThanOrEqual(view.cachedByteCount, 3200)
+            XCTAssertLessThanOrEqual(view.cachedFrameCount, 2)
+        }
+        XCTAssertEqual(view.cachedFrameCount, 2)
+        view.apply([.init(id: "A", count: 3)]); scheduler.fireAll()
+        XCTAssertEqual(view.renderCount, 4, "Recent frame survives LRU eviction")
+        view.apply([.init(id: "A", count: 1)]); scheduler.fireAll()
+        XCTAssertEqual(view.renderCount, 5, "Old frame was evicted by bytes before the count limit")
+        let oversized = GrowthKeyboard3DRenderer(layout: layout(), renderFrame: { _, _ in
+            GrowthKeyboard3DFrame(image: NSImage(size: CGSize(width: 10, height: 10)), rects: [:])
+        }, imageSize: CGSize(width: 10, height: 10), cacheByteLimit: 1, schedule: scheduler.schedule)
+        oversized.setActive(true)
+        var presented = false
+        oversized.apply([.init(id: "A", count: 1)]) { presented = true }
+        scheduler.fireAll()
+        XCTAssertTrue(presented)
+        XCTAssertNotNil(oversized.displayedFrame)
+        XCTAssertEqual(oversized.cachedFrameCount, 0)
+        XCTAssertEqual(oversized.cachedByteCount, 0)
+    }
+
+    func testReplayReleasesEventsOnCancelAndBeforeCompletion() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Requires Metal") }
+        let baseline = layout()
+        let model = GrowthKeyboard3DScene(baseline)
+        let surface = GrowthReplayPressSurface(scene: GrowthReplayPressScene(mac: model),
+            size: GrowthKeyboard3DScene.size, supported: Set(baseline.keys.map(\.id)))
+        let values = baseline.keys.map { GrowthKeyboardKeyUsage(id: $0.id, count: 0) }
+        func retainedCount() -> Int {
+            let plan = Mirror(reflecting: surface).children.first { $0.label == "plan" }!.value as! GrowthReplayPressPlan
+            return plan.entries.count
+        }
+        let entries: [KeyReplayDay.Entry] = (0..<1000).map { i in
+            let event = KeyReplayEvent(milliseconds: UInt64(i * 100), ordinal: UInt64(i),
+                keyCode: 0, phase: .up, growthKeys: [])
+            return .init(seconds: Double(i) / 10, event: event, startsSession: i == 0)
+        }
+        var completed = false
+        surface.play(GrowthReplayPressPlan(day: .init(entries: entries, hasUnreadableChunks: false)),
+            values: values, target: values, background: .clear) { completed = true }
+        XCTAssertEqual(retainedCount(), 1000)
+        surface.cancel()
+        XCTAssertEqual(retainedCount(), 0)
+        XCTAssertFalse(completed)
+        surface.play(GrowthReplayPressPlan(day: .init(entries: [entries[0]], hasUnreadableChunks: false)),
+            values: values, target: values, background: .clear) {
+                XCTAssertEqual(retainedCount(), 0)
+                completed = true
+            }
+        XCTAssertTrue(completed)
+        XCTAssertFalse(surface.isAnimating)
+    }
+
+    func testTypingModifiersIgnoreCrossSideReleasesAndHandleCapsLockOff() {
+        let pairs: [(UInt16, UInt16, UInt, UInt, NSEvent.ModifierFlags)] = [
+            (56, 60, UInt(NX_DEVICELSHIFTKEYMASK), UInt(NX_DEVICERSHIFTKEYMASK), .shift),
+            (55, 54, UInt(NX_DEVICELCMDKEYMASK), UInt(NX_DEVICERCMDKEYMASK), .command),
+            (58, 61, UInt(NX_DEVICELALTKEYMASK), UInt(NX_DEVICERALTKEYMASK), .option),
+            (59, 62, UInt(NX_DEVICELCTLKEYMASK), UInt(NX_DEVICERCTLKEYMASK), .control)]
+        for (left, right, leftMask, rightMask, family) in pairs {
+            let both = NSEvent.ModifierFlags(rawValue: family.rawValue | leftMask | rightMask)
+            XCTAssertEqual(MechanicalKeyboardView.modifierPressKeyID(left, flags: both), MechanicalKeyboardView.physicalKeyID(left))
+            XCTAssertEqual(MechanicalKeyboardView.modifierPressKeyID(right, flags: both), MechanicalKeyboardView.physicalKeyID(right))
+            XCTAssertNil(MechanicalKeyboardView.modifierPressKeyID(left,
+                flags: NSEvent.ModifierFlags(rawValue: family.rawValue | rightMask)))
+            XCTAssertNil(MechanicalKeyboardView.modifierPressKeyID(right,
+                flags: NSEvent.ModifierFlags(rawValue: family.rawValue | leftMask)))
+        }
+        XCTAssertEqual(MechanicalKeyboardView.modifierPressKeyID(57, flags: .capsLock), "CapsLock")
+        XCTAssertEqual(MechanicalKeyboardView.modifierPressKeyID(57, flags: []), "CapsLock")
+        XCTAssertEqual(MechanicalKeyboardView.modifierPressKeyID(63, flags: .function), "Fn")
+        XCTAssertNil(MechanicalKeyboardView.modifierPressKeyID(63, flags: []))
+    }
+
     func testViewportPreservesAnchorAndClampsZoomAndPan() {
         var viewport = KeyboardViewportState()
         let size = CGSize(width: 1000, height: 600), anchor = CGPoint(x: 300, y: 240)
@@ -334,9 +465,25 @@ final class GrowthKeyboard3DTests: XCTestCase {
         picker.dateValue = first; page.perform(picker.action!)
         XCTAssertEqual(mechanicalSelection?.count, 3)
         XCTAssertFalse(mechanical.hasScheduledRender)
-        page.setMechanical(false)
-        XCTAssertFalse(page.usesMechanical)
-        XCTAssertTrue(play.isEnabled)
+        weak var closedRenderer: GrowthKeyboard3DRenderer?
+        autoreleasepool {
+            page.setMechanical(false)
+            XCTAssertFalse(page.usesMechanical)
+            XCTAssertTrue(play.isEnabled)
+            closedRenderer = descendants(page.view).compactMap { $0 as? GrowthKeyboard3DRenderer }.first
+            page.setPresented(false)
+            XCTAssertNotNil(closedRenderer, "Temporary inactivity retains the complete frame")
+            page.releaseResourcesForClosedWindow()
+        }
+        XCTAssertNil(closedRenderer, "Closing releases the renderer, its scene and frame cache")
+        page.setPresented(true)
+        page.refreshData(resetToToday: true)
+        let reopened = try XCTUnwrap(descendants(page.view).compactMap { $0 as? GrowthKeyboard3DRenderer }.first)
+        XCTAssertFalse(reopened.hasScheduledRender, "An unattached page must not render")
+        var reopenedSelection: GrowthKeyboardKeyUsage?
+        reopened.onSelectionChanged = { reopenedSelection = $0 }
+        reopened.selectKey("A")
+        XCTAssertEqual(reopenedSelection?.count, 10)
     }
 
     func testMechanicalGrowthHeightIsFixedBoundedAndMonotonic() {

@@ -7,6 +7,7 @@ struct AppStats: Codable {
     var keyPressCounts: [String: Int]
     var leftClicks: Int
     var rightClicks: Int
+    var middleClicks: Int
     var sideBackClicks: Int
     var sideForwardClicks: Int
     var scrollDistance: Double
@@ -19,6 +20,7 @@ struct AppStats: Codable {
         self.keyPressCounts = [:]
         self.leftClicks = 0
         self.rightClicks = 0
+        self.middleClicks = 0
         self.sideBackClicks = 0
         self.sideForwardClicks = 0
         self.scrollDistance = 0
@@ -32,6 +34,7 @@ struct AppStats: Codable {
         case keyPressCounts
         case leftClicks
         case rightClicks
+        case middleClicks
         case sideBackClicks
         case sideForwardClicks
         // legacy field
@@ -48,6 +51,7 @@ struct AppStats: Codable {
         keyPressCounts = try container.decodeIfPresent([String: Int].self, forKey: .keyPressCounts) ?? [:]
         leftClicks = try container.decodeIfPresent(Int.self, forKey: .leftClicks) ?? 0
         rightClicks = try container.decodeIfPresent(Int.self, forKey: .rightClicks) ?? 0
+        middleClicks = try container.decodeIfPresent(Int.self, forKey: .middleClicks) ?? 0
         sideBackClicks = try container.decodeIfPresent(Int.self, forKey: .sideBackClicks) ?? 0
         sideForwardClicks = try container.decodeIfPresent(Int.self, forKey: .sideForwardClicks) ?? 0
         // Backward compatibility: old builds stored all side clicks in `otherClicks`.
@@ -66,6 +70,7 @@ struct AppStats: Codable {
         try container.encode(keyPressCounts, forKey: .keyPressCounts)
         try container.encode(leftClicks, forKey: .leftClicks)
         try container.encode(rightClicks, forKey: .rightClicks)
+        try container.encode(middleClicks, forKey: .middleClicks)
         try container.encode(sideBackClicks, forKey: .sideBackClicks)
         try container.encode(sideForwardClicks, forKey: .sideForwardClicks)
         try container.encode(scrollDistance, forKey: .scrollDistance)
@@ -73,13 +78,14 @@ struct AppStats: Codable {
     }
 
     var totalClicks: Int {
-        return leftClicks + rightClicks + sideBackClicks + sideForwardClicks
+        return saturatingNonnegativeSum([leftClicks, rightClicks, middleClicks, sideBackClicks, sideForwardClicks])
     }
 
     var hasActivity: Bool {
         return keyPresses > 0 ||
             leftClicks > 0 ||
             rightClicks > 0 ||
+            middleClicks > 0 ||
             sideBackClicks > 0 ||
             sideForwardClicks > 0 ||
             scrollDistance > 0 ||
@@ -92,26 +98,30 @@ struct AppStats: Codable {
     }
 
     mutating func recordKeyPress(keyName: String? = nil) {
-        keyPresses += 1
+        keyPresses = min(keyPresses, Int.max - 1) + 1
         if let keyName, !keyName.isEmpty {
-            keyPressCounts[keyName, default: 0] += 1
+            keyPressCounts[keyName] = min(keyPressCounts[keyName, default: 0], Int.max - 1) + 1
         }
     }
 
     mutating func recordLeftClick() {
-        leftClicks += 1
+        leftClicks = min(leftClicks, Int.max - 1) + 1
     }
 
     mutating func recordRightClick() {
-        rightClicks += 1
+        rightClicks = min(rightClicks, Int.max - 1) + 1
+    }
+
+    mutating func recordMiddleClick() {
+        middleClicks = min(middleClicks, Int.max - 1) + 1
     }
 
     mutating func recordSideBackClick() {
-        sideBackClicks += 1
+        sideBackClicks = min(sideBackClicks, Int.max - 1) + 1
     }
 
     mutating func recordSideForwardClick() {
-        sideForwardClicks += 1
+        sideForwardClicks = min(sideForwardClicks, Int.max - 1) + 1
     }
 
     mutating func addScrollDistance(_ distance: Double) {

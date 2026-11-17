@@ -48,10 +48,10 @@ enum PhysicalKeyMapping {
                 guard let normalized = normalizedKeyboardHeatmapDisplayKey(component) else { continue }
                 let key = normalized == "+" ? "=" : normalized
                 if supportedIDs.contains(key) {
-                    counts[key, default: 0] += count
+                    counts[key] = saturatingNonnegativeSum([counts[key, default: 0], count])
                 } else {
                     // Preserve the original component, including unknown/media names.
-                    unsupported[component, default: 0] += count
+                    unsupported[component] = saturatingNonnegativeSum([unsupported[component, default: 0], count])
                 }
             }
         }
